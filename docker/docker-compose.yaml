@@ -1,0 +1,68 @@
+# docker/build.bash writes docker/.env (absolute paths, host UID/GID, runtime); without it the
+# fallbacks below assume the command runs from the repo root as UID/GID 1000 on runc.
+#
+#   docker compose -f docker/docker-compose.yaml build
+#   docker compose -f docker/docker-compose.yaml run --rm dev
+#   docker compose -f docker/docker-compose.yaml run --rm eval [command ...]
+
+name: swarp_gz_test
+
+x-env: &env
+  WS_DIR: ${WS_DIR:-${PWD}}
+  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+  NVIDIA_VISIBLE_DEVICES: all
+  NVIDIA_DRIVER_CAPABILITIES: all
+
+x-common: &common
+  image: swarp_gz_test
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      USERNAME: ${USERNAME:-ros}
+      UID: ${HOST_UID:-1000}
+      GID: ${HOST_GID:-1000}
+  runtime: ${DOCKER_RUNTIME:-runc}
+  network_mode: host
+  init: true
+  working_dir: ${WS_DIR:-${PWD}}
+  group_add:
+    - "${VIDEO_GID:-44}"
+    - "${RENDER_GID:-44}"
+
+x-volumes: &volumes
+  - ${WS_DIR:-${PWD}}:${WS_DIR:-${PWD}}
+  - ${SWARP_DIR:-../../swarp}:/opt/swarp:ro
+  - /dev/shm:/dev/shm
+  - /dev/dri:/dev/dri
+
+services:
+  # Interactive shell with X11. Prefer docker/run.bash, which also prepares the xauth file;
+  # with compose, create /tmp/.docker.xauth first (see README).
+  dev:
+    <<: *common
+    stdin_open: true
+    tty: true
+    command: bash
+    environment:
+      <<: *env
+      COLCON_BUILD: auto
+      DISPLAY: ${DISPLAY:-}
+      XAUTHORITY: /tmp/.docker.xauth
+      QT_X11_NO_MITSHM: "1"
+    volumes:
+      - ${WS_DIR:-${PWD}}:${WS_DIR:-${PWD}}
+      - ${SWARP_DIR:-../../swarp}:/opt/swarp:ro
+      - /dev/shm:/dev/shm
+      - /dev/dri:/dev/dri
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
+
+  # Headless: rebuilds the workspace on start, then runs the command (overridable).
+  eval:
+    <<: *common
+    command: ros2 launch pusht_gz sim.launch.py headless:=true
+    environment:
+      <<: *env
+      COLCON_BUILD: always
+    volumes: *volumes

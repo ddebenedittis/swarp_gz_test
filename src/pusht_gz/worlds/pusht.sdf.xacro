@@ -1,0 +1,86 @@
+<?xml version="1.0"?>
+<!--
+  Push-T world: flat floor, sun, 1 ms physics. No walls (swarp's walls are invisible to the
+  lidar and only clamp positions); the arena outline is drawn on visibility bit 31, which no
+  lidar sees. rtf:=0 runs as fast as possible.
+-->
+<sdf version="1.9" xmlns:xacro="http://ros.org/wiki/xacro">
+  <xacro:arg name="world_name" default="pusht"/>
+  <xacro:arg name="rtf" default="1.0"/>
+  <xacro:arg name="step" default="0.001"/>
+  <xacro:arg name="arena_half" default="2.0"/>
+  <xacro:arg name="floor_mu" default="1.0"/>
+
+  <xacro:property name="half" value="$(arg arena_half)"/>
+
+  <world name="$(arg world_name)">
+    <physics name="default_physics" type="dart">
+      <max_step_size>$(arg step)</max_step_size>
+      <real_time_factor>$(arg rtf)</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-contact-system" name="gz::sim::systems::Contact"/>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>true</shadows>
+      <grid>false</grid>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>40 40</size></plane></geometry>
+          <surface>
+            <friction><ode><mu>$(arg floor_mu)</mu><mu2>$(arg floor_mu)</mu2></ode></friction>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>40 40</size></plane></geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="arena_outline">
+      <static>true</static>
+      <link name="link">
+        <xacro:macro name="edge" params="name x y lx ly">
+          <visual name="${name}">
+            <pose>${x} ${y} 0.001 0 0 0</pose>
+            <geometry><box><size>${lx} ${ly} 0.002</size></box></geometry>
+            <cast_shadows>false</cast_shadows>
+            <visibility_flags>2147483648</visibility_flags>
+            <material>
+              <ambient>0.2 0.2 0.6 1</ambient>
+              <diffuse>0.2 0.2 0.6 1</diffuse>
+            </material>
+          </visual>
+        </xacro:macro>
+        <xacro:edge name="north" x="0" y="${half}" lx="${2 * half + 0.02}" ly="0.02"/>
+        <xacro:edge name="south" x="0" y="${-half}" lx="${2 * half + 0.02}" ly="0.02"/>
+        <xacro:edge name="east" x="${half}" y="0" lx="0.02" ly="${2 * half + 0.02}"/>
+        <xacro:edge name="west" x="${-half}" y="0" lx="0.02" ly="${2 * half + 0.02}"/>
+      </link>
+    </model>
+  </world>
+</sdf>

@@ -1,0 +1,286 @@
+<?xml version="1.0"?>
+<!--
+  AgileX Limo (4WD skid steer) for Gazebo Harmonic.
+
+  Every link, joint and frame is prefixed with "<robot_name>/", every topic lives under
+  "/<robot_name>/". Dimensions follow the AgileX spec: 0.322 x 0.220 x 0.251 m, 4.2 kg,
+  wheel radius 0.045 m, wheelbase 0.2 m, track 0.172 m.
+
+  Frames (HO-MPC convention): base_footprint on the floor below the body centre, base_link
+  0.15 m above it, laser_link at (0.103, 0, -0.034) from base_link, i.e. 0.116 m above the floor.
+
+  robot_index selects the robot's own visibility bit (1 << robot_index): its lidar masks that
+  bit out, so a robot never sees its own body, while the other robots' lidars still do. Bit 31
+  is reserved for overlay visuals (goal marker, arena lines) that no lidar should see.
+
+  Leave <collision>/<visual> unnamed: sdformat's URDF parser matches <gazebo reference> blocks
+  (friction, visibility flags) to collisions/visuals by their generated names, and silently
+  drops them for named ones.
+-->
+<robot name="limo" xmlns:xacro="http://ros.org/wiki/xacro">
+  <xacro:arg name="robot_name" default="robot_1"/>
+  <xacro:arg name="robot_index" default="1"/>
+  <xacro:arg name="use_mesh" default="true"/>
+  <xacro:arg name="max_linear_acceleration" default="1.0"/>
+  <xacro:arg name="max_angular_acceleration" default="3.0"/>
+  <xacro:arg name="odom_publish_frequency" default="50"/>
+  <xacro:arg name="gt_publish_frequency" default="50"/>
+  <xacro:arg name="world_frame" default="world"/>
+  <xacro:arg name="wheel_mu" default="1.0"/>
+  <xacro:arg name="wheel_mu_lateral" default="0.2"/>
+  <xacro:arg name="body_mu" default="0.1"/>
+  <xacro:arg name="lidar_noise_stddev" default="0.01"/>
+
+  <xacro:property name="name" value="$(arg robot_name)"/>
+  <xacro:property name="p" value="$(arg robot_name)/"/>
+  <xacro:property name="robot_index" value="$(arg robot_index)"/>
+  <xacro:property name="max_lin_acc" value="$(arg max_linear_acceleration)"/>
+  <xacro:property name="max_ang_acc" value="$(arg max_angular_acceleration)"/>
+  <xacro:property name="vis_flags" value="${2 ** int(robot_index)}"/>
+  <xacro:property name="lidar_mask" value="${(2 ** 31 - 1) ^ vis_flags}"/>
+
+  <!-- Body -->
+  <xacro:property name="body_x" value="0.322"/>
+  <xacro:property name="body_y" value="0.220"/>
+  <xacro:property name="body_z" value="0.230"/>
+  <xacro:property name="body_bottom" value="0.020"/>
+  <xacro:property name="base_link_z" value="0.15"/>
+  <xacro:property name="body_mass" value="3.4"/>
+
+  <!-- Wheels: 4 x 0.2 kg, so the robot weighs 4.2 kg -->
+  <xacro:property name="wheel_radius" value="0.045"/>
+  <xacro:property name="wheel_width" value="0.045"/>
+  <xacro:property name="wheel_mass" value="0.2"/>
+  <xacro:property name="wheelbase" value="0.2"/>
+  <xacro:property name="track" value="0.172"/>
+
+  <!-- Lidar mount, from base_link -->
+  <xacro:property name="lidar_x" value="0.103"/>
+  <xacro:property name="lidar_z" value="-0.034"/>
+
+  <material name="limo_body">
+    <color rgba="0.25 0.25 0.28 1.0"/>
+  </material>
+  <material name="limo_wheel">
+    <color rgba="0.08 0.08 0.08 1.0"/>
+  </material>
+  <material name="limo_lidar">
+    <color rgba="0.9 0.7 0.1 1.0"/>
+  </material>
+
+  <link name="${p}base_footprint"/>
+
+  <joint name="${p}base_joint" type="fixed">
+    <parent link="${p}base_footprint"/>
+    <child link="${p}base_link"/>
+    <origin xyz="0 0 ${base_link_z}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="${p}base_link">
+    <inertial>
+      <origin xyz="0 0 ${body_bottom + body_z / 2 - base_link_z}"/>
+      <mass value="${body_mass}"/>
+      <inertia ixx="${body_mass * (body_y ** 2 + body_z ** 2) / 12}" ixy="0" ixz="0"
+               iyy="${body_mass * (body_x ** 2 + body_z ** 2) / 12}" iyz="0"
+               izz="${body_mass * (body_x ** 2 + body_y ** 2) / 12}"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 ${body_bottom + body_z / 2 - base_link_z}"/>
+      <geometry>
+        <box size="${body_x} ${body_y} ${body_z}"/>
+      </geometry>
+    </collision>
+    <xacro:if value="$(arg use_mesh)">
+      <visual>
+        <origin xyz="0 0 ${-base_link_z}" rpy="0 0 ${pi / 2}"/>
+        <geometry>
+          <mesh filename="file://$(find limo_gz_description)/meshes/limo_base.stl" scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="limo_body"/>
+      </visual>
+    </xacro:if>
+    <xacro:unless value="$(arg use_mesh)">
+      <visual>
+        <origin xyz="0 0 ${body_bottom + body_z / 2 - base_link_z}"/>
+        <geometry>
+          <box size="${body_x} ${body_y} ${body_z}"/>
+        </geometry>
+        <material name="limo_body"/>
+      </visual>
+    </xacro:unless>
+    <!-- Footprint-sized band around the lidar plane, so other robots' lidars see exactly the
+         0.322 x 0.220 rectangle swarp's box robots present, whatever the mesh looks like. -->
+    <visual>
+      <origin xyz="0 0 ${lidar_z}"/>
+      <geometry>
+        <box size="${body_x} ${body_y} 0.04"/>
+      </geometry>
+      <material name="limo_body"/>
+    </visual>
+  </link>
+
+  <gazebo reference="${p}base_link">
+    <mu1>$(arg body_mu)</mu1>
+    <mu2>$(arg body_mu)</mu2>
+  </gazebo>
+
+  <!-- side: 1 left, -1 right. The mesh's tyre spans y in [0, 0.045] of its own frame. -->
+  <xacro:macro name="wheel" params="prefix x side">
+    <link name="${p}${prefix}_wheel_link">
+      <inertial>
+        <mass value="${wheel_mass}"/>
+        <inertia ixx="${wheel_mass * (3 * wheel_radius ** 2 + wheel_width ** 2) / 12}" ixy="0" ixz="0"
+                 iyy="${wheel_mass * wheel_radius ** 2 / 2}" iyz="0"
+                 izz="${wheel_mass * (3 * wheel_radius ** 2 + wheel_width ** 2) / 12}"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi / 2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </collision>
+      <visual>
+        <xacro:if value="$(arg use_mesh)">
+          <origin xyz="0 ${-side * wheel_width / 2} 0" rpy="${0 if side > 0 else pi} 0 0"/>
+          <geometry>
+            <mesh filename="file://$(find limo_gz_description)/meshes/limo_wheel.stl" scale="0.001 0.001 0.001"/>
+          </geometry>
+        </xacro:if>
+        <xacro:unless value="$(arg use_mesh)">
+          <origin xyz="0 0 0" rpy="${pi / 2} 0 0"/>
+          <geometry>
+            <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+          </geometry>
+        </xacro:unless>
+        <material name="limo_wheel"/>
+      </visual>
+    </link>
+
+    <joint name="${p}${prefix}_wheel_joint" type="continuous">
+      <parent link="${p}base_link"/>
+      <child link="${p}${prefix}_wheel_link"/>
+      <origin xyz="${x} ${side * track / 2} ${wheel_radius - base_link_z}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+
+    <gazebo reference="${p}${prefix}_wheel_link">
+      <!-- fdir1 is the axle (collision z): mu1 acts sideways, mu2 along the rolling direction.
+           Equal friction both ways cannot turn in place: the lateral scrub torque about the
+           wheelbase exceeds the drive torque about the track. -->
+      <fdir1>0 0 1</fdir1>
+      <mu1>$(arg wheel_mu_lateral)</mu1>
+      <mu2>$(arg wheel_mu)</mu2>
+      <visual>
+        <visibility_flags>${vis_flags}</visibility_flags>
+      </visual>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:wheel prefix="front_left" x="${wheelbase / 2}" side="1"/>
+  <xacro:wheel prefix="front_right" x="${wheelbase / 2}" side="-1"/>
+  <xacro:wheel prefix="rear_left" x="${-wheelbase / 2}" side="1"/>
+  <xacro:wheel prefix="rear_right" x="${-wheelbase / 2}" side="-1"/>
+
+  <!-- Lidar -->
+  <link name="${p}laser_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.02" length="0.03"/>
+      </geometry>
+      <material name="limo_lidar"/>
+    </visual>
+  </link>
+
+  <joint name="${p}laser_joint" type="fixed">
+    <parent link="${p}base_link"/>
+    <child link="${p}laser_link"/>
+    <origin xyz="${lidar_x} 0 ${lidar_z}" rpy="0 0 0"/>
+  </joint>
+
+  <gazebo reference="${p}laser_link">
+    <sensor name="lidar" type="gpu_lidar">
+      <topic>/${name}/scan</topic>
+      <gz_frame_id>${p}laser_link</gz_frame_id>
+      <update_rate>10</update_rate>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <lidar>
+        <scan>
+          <horizontal>
+            <!-- 1 deg steps over the full circle, no duplicate ray at +-pi -->
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>${-pi}</min_angle>
+            <max_angle>${pi - 2 * pi / 360}</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>1</samples>
+            <resolution>1</resolution>
+            <min_angle>0</min_angle>
+            <max_angle>0</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>0.10</min>
+          <max>8.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>$(arg lidar_noise_stddev)</stddev>
+        </noise>
+        <visibility_mask>${lidar_mask}</visibility_mask>
+      </lidar>
+    </sensor>
+  </gazebo>
+
+  <!-- Visibility flags of the body visuals (base_link and laser_link get lumped into
+       base_footprint when sdformat converts the URDF). -->
+  <gazebo reference="${p}base_link">
+    <visual>
+      <visibility_flags>${vis_flags}</visibility_flags>
+    </visual>
+  </gazebo>
+  <gazebo reference="${p}laser_link">
+    <visual>
+      <visibility_flags>${vis_flags}</visibility_flags>
+    </visual>
+  </gazebo>
+
+  <gazebo>
+    <!-- 4WD skid steer: each side's two joints are driven together. -->
+    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+      <left_joint>${p}front_left_wheel_joint</left_joint>
+      <left_joint>${p}rear_left_wheel_joint</left_joint>
+      <right_joint>${p}front_right_wheel_joint</right_joint>
+      <right_joint>${p}rear_right_wheel_joint</right_joint>
+      <wheel_separation>${track}</wheel_separation>
+      <wheel_radius>${wheel_radius}</wheel_radius>
+      <max_linear_acceleration>${max_lin_acc}</max_linear_acceleration>
+      <min_linear_acceleration>${-max_lin_acc}</min_linear_acceleration>
+      <max_angular_acceleration>${max_ang_acc}</max_angular_acceleration>
+      <min_angular_acceleration>${-max_ang_acc}</min_angular_acceleration>
+      <topic>/${name}/cmd_vel</topic>
+      <odom_topic>/${name}/odom</odom_topic>
+      <odom_publish_frequency>$(arg odom_publish_frequency)</odom_publish_frequency>
+      <tf_topic>/${name}/odom_tf</tf_topic>
+      <frame_id>${p}odom</frame_id>
+      <child_frame_id>${p}base_footprint</child_frame_id>
+    </plugin>
+
+    <!-- Exact world-frame ground truth (x, y, yaw and body-frame twist). -->
+    <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+      <odom_frame>$(arg world_frame)</odom_frame>
+      <robot_base_frame>${p}base_footprint</robot_base_frame>
+      <odom_topic>/${name}/gt_odom</odom_topic>
+      <tf_topic>/${name}/gt_tf</tf_topic>
+      <dimensions>2</dimensions>
+      <odom_publish_frequency>$(arg gt_publish_frequency)</odom_publish_frequency>
+    </plugin>
+
+    <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
+      <topic>/${name}/joint_states</topic>
+    </plugin>
+  </gazebo>
+</robot>

@@ -1,0 +1,114 @@
+<?xml version="1.0"?>
+<!--
+  Push-T's T as an SDF model, same construction as swarp.scenarios.shapes.tee(): a crossbar on
+  top, a stem hanging from its middle along -y, the model origin at the area centroid (on the
+  floor), mass split between the boxes by area, inertia by the parallel-axis theorem.
+
+  goal:=true gives the goal marker instead: static, visual only, a flat translucent T on the
+  floor, on visibility bit 31 so no lidar sees it.
+-->
+<sdf version="1.9" xmlns:xacro="http://ros.org/wiki/xacro">
+  <xacro:arg name="name" default="tee"/>
+  <xacro:arg name="goal" default="false"/>
+  <xacro:arg name="bar_len" default="1.0"/>
+  <xacro:arg name="bar_width" default="0.3"/>
+  <xacro:arg name="stem_len" default="0.7"/>
+  <xacro:arg name="stem_width" default="0.3"/>
+  <xacro:arg name="height" default="0.25"/>
+  <xacro:arg name="mass" default="0.5"/>
+  <xacro:arg name="mu" default="0.3"/>
+  <xacro:arg name="gt_publish_frequency" default="50"/>
+  <xacro:arg name="world_frame" default="world"/>
+
+  <xacro:property name="name" value="$(arg name)"/>
+  <xacro:property name="bl" value="$(arg bar_len)"/>
+  <xacro:property name="bw" value="$(arg bar_width)"/>
+  <xacro:property name="sl" value="$(arg stem_len)"/>
+  <xacro:property name="sw" value="$(arg stem_width)"/>
+  <xacro:property name="mass" value="$(arg mass)"/>
+  <xacro:property name="mu" value="$(arg mu)"/>
+
+  <!-- Area centroid: the bar is centred at y = 0, the stem at y_stem. -->
+  <xacro:property name="a_bar" value="${bl * bw}"/>
+  <xacro:property name="a_stem" value="${sw * sl}"/>
+  <xacro:property name="area" value="${a_bar + a_stem}"/>
+  <xacro:property name="y_stem" value="${-(bw + sl) / 2}"/>
+  <xacro:property name="cy" value="${a_stem * y_stem / area}"/>
+  <xacro:property name="oy_bar" value="${-cy}"/>
+  <xacro:property name="oy_stem" value="${y_stem - cy}"/>
+  <xacro:property name="m_bar" value="${mass * a_bar / area}"/>
+  <xacro:property name="m_stem" value="${mass * a_stem / area}"/>
+
+  <xacro:if value="$(arg goal)">
+    <xacro:property name="h" value="0.004"/>
+  </xacro:if>
+  <xacro:unless value="$(arg goal)">
+    <xacro:property name="h" value="$(arg height)"/>
+  </xacro:unless>
+
+  <xacro:macro name="tee_box" params="part oy lx ly">
+    <xacro:unless value="$(arg goal)">
+      <collision name="${part}_collision">
+        <pose>0 ${oy} ${h / 2} 0 0 0</pose>
+        <geometry><box><size>${lx} ${ly} ${h}</size></box></geometry>
+        <surface>
+          <friction><ode><mu>${mu}</mu><mu2>${mu}</mu2></ode></friction>
+        </surface>
+      </collision>
+      <visual name="${part}_visual">
+        <pose>0 ${oy} ${h / 2} 0 0 0</pose>
+        <geometry><box><size>${lx} ${ly} ${h}</size></box></geometry>
+        <material>
+          <ambient>0.75 0.45 0.1 1</ambient>
+          <diffuse>0.85 0.5 0.1 1</diffuse>
+        </material>
+      </visual>
+    </xacro:unless>
+    <xacro:if value="$(arg goal)">
+      <visual name="${part}_visual">
+        <pose>0 ${oy} ${h / 2} 0 0 0</pose>
+        <geometry><box><size>${lx} ${ly} ${h}</size></box></geometry>
+        <cast_shadows>false</cast_shadows>
+        <transparency>0.5</transparency>
+        <visibility_flags>2147483648</visibility_flags>
+        <material>
+          <ambient>0.1 0.8 0.2 1</ambient>
+          <diffuse>0.1 0.8 0.2 1</diffuse>
+        </material>
+      </visual>
+    </xacro:if>
+  </xacro:macro>
+
+  <model name="${name}">
+    <xacro:if value="$(arg goal)">
+      <static>true</static>
+    </xacro:if>
+    <link name="link">
+      <xacro:unless value="$(arg goal)">
+        <inertial>
+          <pose>0 0 ${h / 2} 0 0 0</pose>
+          <mass>${mass}</mass>
+          <inertia>
+            <ixx>${m_bar * (bw ** 2 + h ** 2) / 12 + m_bar * oy_bar ** 2 + m_stem * (sl ** 2 + h ** 2) / 12 + m_stem * oy_stem ** 2}</ixx>
+            <iyy>${m_bar * (bl ** 2 + h ** 2) / 12 + m_stem * (sw ** 2 + h ** 2) / 12}</iyy>
+            <izz>${m_bar * (bl ** 2 + bw ** 2) / 12 + m_bar * oy_bar ** 2 + m_stem * (sw ** 2 + sl ** 2) / 12 + m_stem * oy_stem ** 2}</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+      </xacro:unless>
+      <xacro:tee_box part="bar" oy="${oy_bar}" lx="${bl}" ly="${bw}"/>
+      <xacro:tee_box part="stem" oy="${oy_stem}" lx="${sw}" ly="${sl}"/>
+    </link>
+    <xacro:unless value="$(arg goal)">
+      <!-- Exact world-frame ground truth of the centroid (x, y, yaw, body-frame twist). -->
+      <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+        <odom_frame>$(arg world_frame)</odom_frame>
+        <robot_base_frame>${name}</robot_base_frame>
+        <odom_topic>/${name}/gt_odom</odom_topic>
+        <tf_topic>/${name}/gt_tf</tf_topic>
+        <dimensions>2</dimensions>
+        <odom_publish_frequency>$(arg gt_publish_frequency)</odom_publish_frequency>
+      </plugin>
+    </xacro:unless>
+  </model>
+</sdf>
