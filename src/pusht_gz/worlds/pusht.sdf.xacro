@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <!--
   Push-T world: flat floor, sun, 1 ms physics. No walls (swarp's walls are invisible to the
-  lidar and only clamp positions); the arena outline is drawn on visibility bit 31, which no
+  lidar and only clamp positions); the arena outline is drawn on visibility bit 27, which no
   lidar sees. rtf:=0 runs as fast as possible.
 -->
 <sdf version="1.9" xmlns:xacro="http://ros.org/wiki/xacro">
@@ -10,6 +10,8 @@
   <xacro:arg name="step" default="0.001"/>
   <xacro:arg name="arena_half" default="2.0"/>
   <xacro:arg name="floor_mu" default="1.0"/>
+  <xacro:arg name="camera" default="false"/>
+  <xacro:arg name="camera_rate" default="30"/>
 
   <xacro:property name="half" value="$(arg arena_half)"/>
 
@@ -69,7 +71,7 @@
             <pose>${x} ${y} 0.001 0 0 0</pose>
             <geometry><box><size>${lx} ${ly} 0.002</size></box></geometry>
             <cast_shadows>false</cast_shadows>
-            <visibility_flags>2147483648</visibility_flags>
+            <visibility_flags>134217728</visibility_flags>
             <material>
               <ambient>0.2 0.2 0.6 1</ambient>
               <diffuse>0.2 0.2 0.6 1</diffuse>
@@ -82,5 +84,25 @@
         <xacro:edge name="west" x="${-half}" y="0" lx="0.02" ly="${2 * half + 0.02}"/>
       </link>
     </model>
+    <!-- Video camera (camera:=true): 1280x720 at camera_rate Hz of sim time on gz topic
+         /video/image, looking down at the arena from the -y side, 63 deg below horizontal. -->
+    <xacro:if value="$(arg camera)">
+      <model name="video_camera">
+        <static>true</static>
+        <pose>0 -3.1 5.4 0 1.1 1.5708</pose>
+        <link name="link">
+          <sensor name="video" type="camera">
+            <always_on>true</always_on>
+            <update_rate>$(arg camera_rate)</update_rate>
+            <topic>/video/image</topic>
+            <camera>
+              <horizontal_fov>1.15</horizontal_fov>
+              <image><width>1280</width><height>720</height><format>R8G8B8</format></image>
+              <clip><near>0.1</near><far>50</far></clip>
+            </camera>
+          </sensor>
+        </link>
+      </model>
+    </xacro:if>
   </world>
 </sdf>

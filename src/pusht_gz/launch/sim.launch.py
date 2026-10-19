@@ -56,6 +56,7 @@ ARGS = {
     "goal_y": ("0.8", "goal marker y [m]"),
     "goal_yaw": ("0.5", "goal marker yaw [rad]"),
     "rviz": ("false", "start RViz"),
+    "record_video": ("false", "add the 1280x720 30 Hz video camera (gz topic /video/image)"),
 }
 
 
@@ -130,7 +131,8 @@ def _setup(context):
     poses = _robot_poses(a["robot_poses"], n)
 
     world = models.world_file(
-        world_name=WORLD, rtf=a["rtf"], step=a["step"], arena_half=a["arena_half"])
+        world_name=WORLD, rtf=a["rtf"], step=a["step"], arena_half=a["arena_half"],
+        camera=a["record_video"].lower() in ("1", "true", "yes"))
     engines = {"dart": "", "bullet-featherstone": "--physics-engine gz-physics-bullet-featherstone-plugin"}
     gz_args = f"-r {engines[a['physics_engine']]} {world}"
     if headless:

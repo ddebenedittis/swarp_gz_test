@@ -10,8 +10,9 @@
   0.15 m above it, laser_link at (0.103, 0, -0.034) from base_link, i.e. 0.116 m above the floor.
 
   robot_index selects the robot's own visibility bit (1 << robot_index): its lidar masks that
-  bit out, so a robot never sees its own body, while the other robots' lidars still do. Bit 31
-  is reserved for overlay visuals (goal marker, arena lines) that no lidar should see.
+  bit out, so a robot never sees its own body, while the other robots' lidars still do. Bit 27
+  is reserved for overlay visuals (goal marker, arena lines) that no lidar should see; bits
+  28-31 are gz-rendering's own (cameras never render them).
 
   Leave <collision>/<visual> unnamed: sdformat's URDF parser matches <gazebo reference> blocks
   (friction, visibility flags) to collisions/visuals by their generated names, and silently
@@ -37,7 +38,7 @@
   <xacro:property name="max_lin_acc" value="$(arg max_linear_acceleration)"/>
   <xacro:property name="max_ang_acc" value="$(arg max_angular_acceleration)"/>
   <xacro:property name="vis_flags" value="${2 ** int(robot_index)}"/>
-  <xacro:property name="lidar_mask" value="${(2 ** 31 - 1) ^ vis_flags}"/>
+  <xacro:property name="lidar_mask" value="${(2 ** 27 - 1) ^ vis_flags}"/>
 
   <!-- Body -->
   <xacro:property name="body_x" value="0.322"/>

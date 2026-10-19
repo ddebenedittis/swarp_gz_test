@@ -41,6 +41,12 @@ RUN python3 -m venv --system-site-packages ${VIRTUAL_ENV} \
 ENV PATH=${VIRTUAL_ENV}/bin:${PATH}
 ENV PYTHONPATH=${VIRTUAL_ENV}/lib/python3.12/site-packages:/opt/swarp
 
+# ffmpeg encodes the eval videos (pusht_policy video_recorder). Its own layer, after the
+# venv, so adding it does not rebuild torch.
+RUN --mount=type=cache,sharing=locked,target=/var/cache/apt \
+    --mount=type=cache,sharing=locked,target=/var/lib/apt \
+    apt-get update && apt-get install -y --no-install-recommends ffmpeg
+
 # Non-root user matching the host UID/GID. Ubuntu 24.04 images ship an `ubuntu` user with
 # UID/GID 1000: drop whatever already owns the requested IDs.
 ARG USERNAME=ros

@@ -25,6 +25,7 @@ setup(
             "episode_manager = pusht_policy.episode_manager:main",
             "aggregate = pusht_policy.aggregate:main",
             "sysid_gz = pusht_policy.sysid.gz_runner:main",
+            "video_recorder = pusht_policy.video_recorder:main",
         ],
     },
 )

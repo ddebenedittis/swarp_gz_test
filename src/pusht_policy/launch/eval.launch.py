@@ -38,6 +38,9 @@ ARGS = {
     "sample": ("false", "draw actions from the policy distribution instead of greedy"),
     "headless": ("true", "no Gazebo GUI"),
     "rtf": ("0", "real-time factor; 0 runs as fast as possible"),
+    "record_video": ("false", "film the episodes with the world's video camera into one mp4"),
+    "video": ("", "mp4 path; default <run>/video.mp4"),
+    "video_title": ("", "text in the video's top-right corner"),
     # Physical parameters forwarded to pusht_gz sim.launch.py (sim-to-sim knobs).
     "max_linear_acceleration": ("1.0", "diff-drive linear acceleration limit [m/s^2]"),
     "max_angular_acceleration": ("3.0", "diff-drive angular acceleration limit [rad/s^2]"),
@@ -71,6 +74,7 @@ def _setup(context):
             "tee_bar_width": str(task.bar_width),
             "tee_stem_len": str(task.stem_len),
             "tee_stem_width": str(task.stem_width),
+            "record_video": a["record_video"],
             **{k: a[k] for k in ("max_linear_acceleration", "max_angular_acceleration",
                                  "wheel_mu_lateral", "tee_mass", "tee_mu")},
         }.items(),
@@ -110,7 +114,23 @@ def _setup(context):
     done = RegisterEventHandler(
         OnProcessExit(target_action=manager, on_exit=[EmitEvent(event=Shutdown(reason="episodes done"))])
     )
-    return [sim, *policies, manager, done]
+    extra = []
+    if a["record_video"].lower() in ("1", "true", "yes"):
+        os.makedirs(run_dir, exist_ok=True)
+        extra.append(Node(
+            package="pusht_policy",
+            executable="video_recorder",
+            parameters=[{
+                "output": a["video"] or os.path.join(run_dir, "video.mp4"),
+                "title": a["video_title"],
+                "goal_tolerance": task.goal_tolerance,
+                "angle_tolerance": task.angle_tolerance,
+                "use_sim_time": True,
+            }],
+            output="screen",
+            sigterm_timeout="30",
+        ))
+    return [sim, *policies, manager, done, *extra]
 
 
 def generate_launch_description():

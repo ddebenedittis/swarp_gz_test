@@ -83,6 +83,22 @@ Each episode is a row of `out/<run name>/episodes.csv`; with `record:=true`, `re
 Results for the Limo-scale checkpoints, with failure modes and how to reproduce them: [docs/results.md](docs/results.md).
 Per-run failure classes, stalls and squeeze locks: `PYTHONPATH=src/pusht_policy python3 -m pusht_policy.failure_modes out/<run>`.
 
+## Record a video
+
+```bash
+docker compose -f docker/docker-compose.yaml run --rm eval ros2 launch pusht_policy eval.launch.py \
+    checkpoint:=/opt/swarp/runs/<run>/<ckpt>.pt episodes:=4 seed:=0 rtf:=1 \
+    record_video:=true video:=$PWD/out/videos/<name>.mp4 video_title:="<text in the corner>"
+```
+
+`record_video:=true` adds a 1280×720 camera to the world, rendering at 30 Hz of sim time and looking down on the arena from the −y side.
+`video_recorder` reads its frames straight from gz-transport and pipes them to ffmpeg (H.264), one mp4 for all episodes.
+Only frames of running episodes are written.
+Each frame carries the episode id and its elapsed sim time, and the last frame of each episode is held for 1.5 s under a SOLVED or TIMEOUT banner.
+The banner uses the checkpoint's tolerances on the final T pose.
+Frames missing from the stream are filled with the previous one, so the video plays at sim time; `rtf:=1` keeps the gaps rare.
+The episodes' initial states are those of the eval seed, but Gazebo is not deterministic, so a re-recorded episode can play out differently.
+
 ## Sim-to-sim system identification
 
 The same scripted `(v, ω)` sequences from the same initial states in swarp and in Gazebo (`pusht_policy/sysid/experiments.py`): robot steps and arcs, pushes, the lidar against the T, and swarp's greedy policy from recorded Gazebo episode starts.

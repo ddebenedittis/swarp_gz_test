@@ -49,12 +49,13 @@ limo_gz_description   pusht_gz_plugins
   - `task.py`: `Task.from_checkpoint` (geometry, tolerances, horizon via the real scenario object) and `sample_episode` (swarp's reset kernels in numpy, overlapping spawns redrawn).
   - `policy_node.py`: one per robot; a step per scan whose stamp is `dt` past the last (not a timer), poses at the nearest stamp (a due scan waits for a lagging pose), `actor.greedy` or, with `sample`, the trainer's tanh-Gaussian draw.
   - `episode_manager.py`: reset, `/goal` + `/episode`, scoring, `episodes.csv`.
+  - `video_recorder.py`: with `eval.launch.py record_video:=true`, gz camera frames (gz-transport, not bridged) + overlay -> ffmpeg pipe -> one mp4.
   - `launch/eval.launch.py`, `scripts/eval_shards.bash` (staggered shards, restarts a shard that never started; `DOMAIN_BASE`/`BUILD=0` for concurrent runs), `aggregate.py` (Wilson interval, stdlib only), `failure_modes.py` (failure classes and squeeze locks from `rec/`); swarp-side references: `scripts/swarp_reference.py` (host venv). Results: `docs/results.md`.
   - `sysid/`: shared experiment definitions, `gz_runner.py` (`sysid_gz`), `compare.py`; the swarp side is `scripts/sysid_swarp.py` (host venv), which pins swarp's state by overriding `PushTLidarScenario._launch_spawn`.
 
 ## Notes
 
-- Lidar self-occlusion: robot `i`'s visuals are on visibility bit `1 << i` and its lidar masks that bit out; bit 31 is for overlays (goal marker, arena outline) that no lidar sees.
+- Lidar self-occlusion: robot `i`'s visuals are on visibility bit `1 << i` and its lidar masks that bit out; bit 27 is for overlays (goal marker, arena outline) that no lidar sees. Bits 28-31 are reserved by gz-rendering: cameras (default mask 0x0FFFFFFF) never render them.
 - A `lidar_shell` box visual (0.322×0.220, around the lidar plane) makes other robots appear exactly as swarp's box robots.
 - Do not name `<collision>`/`<visual>` in the URDF: sdformat then silently drops the `<gazebo reference>` friction and visibility blocks.
 - Wheel friction is anisotropic (`fdir1` = axle, `mu1` lateral 0.2, `mu2` rolling 1.0). With isotropic mu the 4WD skid steer cannot turn in place (scrub torque about the wheelbase beats drive torque about the track). Commanded ω = 1.0 gives 0.79 rad/s.

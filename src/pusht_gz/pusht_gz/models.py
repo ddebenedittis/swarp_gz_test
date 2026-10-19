@@ -1,7 +1,7 @@
 """Render the simulation's xacro models to URDF / SDF strings.
 
 Visibility bits: robot ``i`` puts its visuals on bit ``i`` and its lidar masks that bit out, so a
-robot never sees its own body; bit 31 holds overlays (goal marker, arena outline) that no lidar
+robot never sees its own body; bit 27 holds overlays (goal marker, arena outline) that no lidar
 sees. gz-sim spawns the robot's URDF directly (sdformat converts it).
 """
 
@@ -13,7 +13,7 @@ import tempfile
 import xacro
 from ament_index_python.packages import get_package_share_directory
 
-MAX_ROBOTS = 30
+MAX_ROBOTS = 26  # bits 1..26; 27 is the overlay bit, 28-31 are gz-rendering's own
 
 
 def _xacro(path: str, **args) -> str:

@@ -5,7 +5,7 @@
   floor), mass split between the boxes by area, inertia by the parallel-axis theorem.
 
   goal:=true gives the goal marker instead: static, visual only, a flat translucent T on the
-  floor, on visibility bit 31 so no lidar sees it.
+  floor, on visibility bit 27 so no lidar sees it.
 -->
 <sdf version="1.9" xmlns:xacro="http://ros.org/wiki/xacro">
   <xacro:arg name="name" default="tee"/>
@@ -95,7 +95,7 @@
         <geometry><box><size>${lx} ${ly} ${h}</size></box></geometry>
         <cast_shadows>false</cast_shadows>
         <transparency>0.5</transparency>
-        <visibility_flags>2147483648</visibility_flags>
+        <visibility_flags>134217728</visibility_flags>
         <material>
           <ambient>0.1 0.8 0.2 1</ambient>
           <diffuse>0.1 0.8 0.2 1</diffuse>
