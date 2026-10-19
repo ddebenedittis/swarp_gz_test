@@ -11,6 +11,8 @@
 # full command line is kept in out/<run name>/cmd.
 # Shard k uses ROS_DOMAIN_ID ${DOMAIN_BASE:-30} + k: give concurrent runs disjoint bases.
 # BUILD=0 skips the workspace build (a second run started while another is using it).
+# STAGGER (s, default 20) spaces the shard starts; RETRIES (default 3) bounds the restarts of
+# a shard that failed before its first episode.
 set -euo pipefail
 
 WS_DIR="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")"
@@ -30,26 +32,39 @@ if [[ "${BUILD:-1}" != 0 ]]; then
     "${COMPOSE[@]}" run --rm -e COLCON_BUILD=always eval true
 fi
 
-names=()
-for k in $(seq 0 $((SHARDS - 1))); do
-    name="pusht_eval_${RUN//[^A-Za-z0-9_.-]/_}_${k}"
-    "${COMPOSE[@]}" run -d --name "${name}" \
-        -e COLCON_BUILD=never \
-        -e ROS_DOMAIN_ID=$((DOMAIN_BASE + k)) \
-        -e GZ_PARTITION="${name}" \
-        eval ros2 launch pusht_policy eval.launch.py \
-        checkpoint:="${CKPT}" episodes:="${EPISODES}" seed:=$((BASE_SEED + k)) \
-        run_name:="${RUN}/shard${k}" "${EXTRA[@]}" > /dev/null
-    names+=("${name}")
-    echo "started ${name} (seed $((BASE_SEED + k)), ROS_DOMAIN_ID $((DOMAIN_BASE + k)))"
-done
+# One shard: a container that runs the episodes. Gazebo sometimes hangs in its first seconds
+# when several servers start rendering at once (no /clock, or no scans, and the manager
+# times out before its first episode), so the starts are staggered and a shard that wrote
+# no episodes.csv is started again. One that died mid-run is not: its seed would repeat.
+run_shard() {
+    local k="$1" attempt name code
+    local csv="${WS_DIR}/out/${RUN}/shard${k}/episodes.csv"
+    for attempt in $(seq 1 "${RETRIES:-3}"); do
+        name="pusht_eval_${RUN//[^A-Za-z0-9_.-]/_}_${k}"
+        "${COMPOSE[@]}" run -d --name "${name}" \
+            -e COLCON_BUILD=never \
+            -e ROS_DOMAIN_ID=$((DOMAIN_BASE + k)) \
+            -e GZ_PARTITION="${name}" \
+            eval ros2 launch pusht_policy eval.launch.py \
+            checkpoint:="${CKPT}" episodes:="${EPISODES}" seed:=$((BASE_SEED + k)) \
+            run_name:="${RUN}/shard${k}" "${EXTRA[@]}" > /dev/null
+        echo "started ${name} (seed $((BASE_SEED + k)), ROS_DOMAIN_ID $((DOMAIN_BASE + k)), attempt ${attempt})"
+        code="$(docker wait "${name}")"
+        docker logs "${name}" > "${WS_DIR}/out/${RUN}/${k}.log" 2>&1 || true
+        docker rm "${name}" > /dev/null
+        echo "${name} exited ${code}"
+        [[ -f "${csv}" ]] && return 0
+        cp "${WS_DIR}/out/${RUN}/${k}.log" "${WS_DIR}/out/${RUN}/${k}.attempt${attempt}.log"
+        echo "${name} wrote no episodes, restarting"
+    done
+    echo "${name} gave up after ${RETRIES:-3} attempts"
+}
 
-for name in "${names[@]}"; do
-    code="$(docker wait "${name}")"
-    echo "${name} exited ${code}"
-    docker logs "${name}" > "${WS_DIR}/out/${RUN}/$(echo "${name}" | sed 's/.*_//').log" 2>&1 || true
-    docker rm "${name}" > /dev/null
+for k in $(seq 0 $((SHARDS - 1))); do
+    run_shard "${k}" &
+    sleep "${STAGGER:-20}"
 done
+wait
 
 python3 -m pusht_policy.aggregate "${WS_DIR}/out/${RUN}" 2>/dev/null \
     || PYTHONPATH="${WS_DIR}/src/pusht_policy" python3 "${WS_DIR}/src/pusht_policy/pusht_policy/aggregate.py" "${WS_DIR}/out/${RUN}"
