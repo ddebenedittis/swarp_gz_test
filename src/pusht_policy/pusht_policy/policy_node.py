@@ -14,8 +14,10 @@ scans of consecutive control steps, which a timer beating against the lidar's ow
 would break (a repeated or skipped frame every few steps).
 
 Each step builds the observation with :mod:`pusht_policy.obs` and publishes
-``actor.greedy(obs, role)``. A new episode id zeroes the frame stack; while stopped the node
-publishes a zero twist on every scan. With ``record_dir`` set, every episode's per-step
+``actor.greedy(obs, role)``, or with ``sample`` an action drawn from the policy's
+tanh-Gaussian as in training (``squash(loc + scale * eps)``, ``eps`` from a generator seeded
+with ``sample_seed``). The command is held between steps. A new episode id zeroes the frame
+stack; while stopped the node publishes a zero twist on every scan. With ``record_dir`` set, every episode's per-step
 observations, actions, scans and poses (plus the T pose, for diagnosis only) go to
 ``record_dir/ep<id>_robot_<i>.npz``.
 """
@@ -93,6 +95,8 @@ class PolicyNode(Node):
         self.mount_x = float(self.declare_parameter("lidar_mount_x", 0.103).value)
         self.max_pose_age = float(self.declare_parameter("max_pose_age", 0.05).value)
         self.record_dir = self.declare_parameter("record_dir", "").value
+        self.sample = bool(self.declare_parameter("sample", False).value)
+        self.gen = torch.Generator().manual_seed(int(self.declare_parameter("sample_seed", 0).value))
         if not ckpt:
             raise ValueError("parameter 'checkpoint' is required")
 
@@ -140,7 +144,8 @@ class PolicyNode(Node):
         self.get_logger().info(
             f"{self.name}: agent {self.agent} of {n_robots}, role {int(self.roles[self.agent])}, "
             f"obs_dim {self.cfg.obs_dim}, dt {self.dt}, {self.cfg.n_rays} rays to "
-            f"{self.cfg.max_range} m, frame_stack {self.cfg.frame_stack}"
+            f"{self.cfg.max_range} m, frame_stack {self.cfg.frame_stack}, "
+            f"{'sampled' if self.sample else 'greedy'} actions"
         )
 
     # ------------------------------------------------------------------ inputs
@@ -211,8 +216,7 @@ class PolicyNode(Node):
         )
         gx, gy, gth = self.goal
         obs = self.builder.build(pos, vel, theta, self.roles, np.array([gx, gy]), gth, ranges, cls)
-        with torch.no_grad():
-            act = self.actor.greedy(torch.from_numpy(obs)[None], self.role_t)[0].numpy()
+        act = self._act(torch.from_numpy(obs)[None])
         self._publish(act[0], act[1])
         self.last_step_t = t
         self.steps += 1
@@ -227,6 +231,15 @@ class PolicyNode(Node):
             r["goal"].append(np.array(self.goal, dtype=np.float32))
             tee = self.tee.nearest(t)
             r["tee"].append(np.array(tee[1] if tee else (np.nan,) * 3, dtype=np.float32))
+
+    @torch.no_grad()
+    def _act(self, obs: torch.Tensor) -> np.ndarray:
+        if not self.sample:
+            return self.actor.greedy(obs, self.role_t)[0].numpy()
+        # The trainer's rollout draw (swarp.rl.ppo): u ~ N(loc, scale), action squash(u).
+        loc, scale = self.actor(obs, self.role_t)
+        u = loc + scale * torch.randn(loc.shape, generator=self.gen, dtype=loc.dtype)
+        return self.actor.squash(u)[0].numpy()
 
     def _state_at(self, t: float):
         pos = np.zeros((len(self.robots), 2))

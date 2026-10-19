@@ -35,6 +35,7 @@ ARGS = {
     "out_dir": (os.path.join(os.environ.get("WS_DIR", "."), "out"), "results root"),
     "run_name": ("", "results subdirectory; default <checkpoint stem>_s<seed>"),
     "record": ("false", "write per-step obs/actions/scans to <run>/rec/*.npz"),
+    "sample": ("false", "draw actions from the policy distribution instead of greedy"),
     "headless": ("true", "no Gazebo GUI"),
     "rtf": ("0", "real-time factor; 0 runs as fast as possible"),
     # Physical parameters forwarded to pusht_gz sim.launch.py (sim-to-sim knobs).
@@ -55,6 +56,7 @@ def _setup(context):
     run_name = a["run_name"] or f"{os.path.splitext(os.path.basename(ckpt))[0]}_s{a['seed']}"
     run_dir = os.path.join(a["out_dir"], run_name)
     record = a["record"].lower() in ("1", "true", "yes")
+    sample = a["sample"].lower() in ("1", "true", "yes")
 
     sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -83,6 +85,9 @@ def _setup(context):
                 "robot_index": i,
                 "n_robots": task.n_agents,
                 "record_dir": os.path.join(run_dir, "rec") if record else "",
+                "sample": sample,
+                # Distinct per robot and per shard seed.
+                "sample_seed": 1000 * int(a["seed"]) + i,
                 "use_sim_time": True,
             }],
             output="screen",

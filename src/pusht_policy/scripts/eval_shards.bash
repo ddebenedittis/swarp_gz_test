@@ -7,6 +7,9 @@
 #
 # The checkpoint path must be visible in the container: inside this repo, or under ../swarp
 # (give it as /opt/swarp/...). Shard k writes out/<run name>/shard<k>/episodes.csv.
+# Extra launch args go to every shard's eval.launch.py, e.g. `sample:=true record:=true`; the
+# full command line is kept in out/<run name>/cmd.
+# Shard k uses ROS_DOMAIN_ID ${DOMAIN_BASE:-30} + k: give concurrent runs disjoint bases.
 set -euo pipefail
 
 WS_DIR="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")"
@@ -16,6 +19,10 @@ RUN="${4:-$(basename "${CKPT%.pt}")_$(date +%Y%m%d-%H%M%S)}"
 BASE_SEED="${5:-0}"
 shift $(( $# < 5 ? $# : 5 ))
 EXTRA=("$@")
+DOMAIN_BASE="${DOMAIN_BASE:-30}"
+
+mkdir -p "${WS_DIR}/out/${RUN}"
+echo "$0 ${CKPT} ${SHARDS} ${EPISODES} ${RUN} ${BASE_SEED} ${EXTRA[*]}" > "${WS_DIR}/out/${RUN}/cmd"
 
 # Build the workspace once; the shards then share it without rebuilding.
 "${COMPOSE[@]}" run --rm -e COLCON_BUILD=always eval true
@@ -25,13 +32,13 @@ for k in $(seq 0 $((SHARDS - 1))); do
     name="pusht_eval_${RUN//[^A-Za-z0-9_.-]/_}_${k}"
     "${COMPOSE[@]}" run -d --name "${name}" \
         -e COLCON_BUILD=never \
-        -e ROS_DOMAIN_ID=$((30 + k)) \
+        -e ROS_DOMAIN_ID=$((DOMAIN_BASE + k)) \
         -e GZ_PARTITION="${name}" \
         eval ros2 launch pusht_policy eval.launch.py \
         checkpoint:="${CKPT}" episodes:="${EPISODES}" seed:=$((BASE_SEED + k)) \
         run_name:="${RUN}/shard${k}" "${EXTRA[@]}" > /dev/null
     names+=("${name}")
-    echo "started ${name} (seed $((BASE_SEED + k)), ROS_DOMAIN_ID $((30 + k)))"
+    echo "started ${name} (seed $((BASE_SEED + k)), ROS_DOMAIN_ID $((DOMAIN_BASE + k)))"
 done
 
 for name in "${names[@]}"; do
