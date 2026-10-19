@@ -27,7 +27,7 @@ PARK_TEE = (1.2, 1.2, 0.0)  # the T when idle
 @dataclass
 class Experiment:
     name: str
-    group: str  # "robot" | "push" | "lidar"
+    group: str  # "robot" | "push" | "lidar" | "contact"
     robots: list[tuple[float, float, float]]
     tee: tuple[float, float, float]
     cmds: np.ndarray = field(default_factory=lambda: np.zeros((0, 2, 2)))  # [steps, robot, (v, w)]
@@ -105,8 +105,32 @@ def lidar_experiments() -> list[Experiment]:
     return out
 
 
+BAR_BOTTOM = 0.0559  # T frame: crossbar underside (outside the stem, |x| > 0.15)
+
+
+def contact_experiments() -> list[Experiment]:
+    """Turning while pressed flat against the T: alone (the T can give) and sandwiched
+    between two robots pressing opposite faces (it cannot)."""
+    tee = (0.0, 0.0, 0.0)
+    gap = 0.002
+    r_top = _behind((0.0, BAR_TOP), -math.pi / 2, gap)
+    out = [
+        Experiment("turn_flush_v0.28_w0.9", "contact", [r_top, PARK_2], tee,
+                   _seq((5.0, 0.28, 0.9), (1.0, 0, 0)), {"v": 0.28, "w": 0.9}),
+        Experiment("turn_flush_v0_w0.9", "contact", [r_top, PARK_2], tee,
+                   _seq((5.0, 0.0, 0.9), (1.0, 0, 0)), {"v": 0.0, "w": 0.9}),
+    ]
+    x = 0.33
+    r1 = _behind((x, BAR_TOP), -math.pi / 2, gap)
+    r2 = _behind((x, BAR_BOTTOM), math.pi / 2, gap)
+    for v in (0.28, 0.0):
+        out.append(Experiment(f"turn_sandwich_v{v:g}_w0.9", "contact", [r1, r2], tee,
+                              _seq((5.0, v, 0.9), (1.0, 0, 0), robots=2), {"v": v, "w": 0.9}))
+    return out
+
+
 def all_experiments() -> list[Experiment]:
-    return robot_experiments() + push_experiments() + lidar_experiments()
+    return robot_experiments() + push_experiments() + lidar_experiments() + contact_experiments()
 
 
 def by_name() -> dict[str, Experiment]:

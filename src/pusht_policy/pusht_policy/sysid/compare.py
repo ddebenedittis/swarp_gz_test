@@ -248,6 +248,27 @@ def main(argv=None) -> None:
          "range MAE (both T) [m]", "rays T in swarp, not in gz"], rows
     ) + "\n\nRay k points at k·11.25° CCW from the heading; bearing β puts the face at ray β/11.25.\n")
 
+    rows = []
+    for e in [x for x in exps.values() if x.group == "contact"]:
+        s, g = load(d, "swarp", e.name), load(d, "gz", e.name)
+        if s is None or g is None:
+            continue
+        n_on = on_steps(e)
+        def cm(r):
+            out = []
+            for i in [i for i in range(2) if np.abs(e.cmds[:, i]).sum() > 0]:
+                dyaw = float(np.degrees(np.unwrap(r["robots"][: n_on + 1, i, 2])[-1] - r["robots"][0, i, 2]))
+                disp = float(np.hypot(*(r["robots"][n_on, i, :2] - r["robots"][0, i, :2])))
+                out.append(f"{dyaw:+.0f}° / {disp:.2f} m")
+            tee = r["tee"]
+            out.append(f"{np.hypot(*(tee[n_on, :2] - tee[0, :2])):.2f} m, {np.degrees(wrap(tee[n_on, 2] - tee[0, 2])):+.0f}°")
+            return out
+        ideal = np.degrees(e.meta["w"] * n_on * DT)
+        rows.append([e.name, f"{ideal:+.0f}°", " ; ".join(cm(s)), " ; ".join(cm(g))])
+    if rows:
+        md.append("## 5. Turning while pressed against the T (per robot: Δyaw / displacement ; T: displacement, Δyaw)\n\n" + table(
+            ["exp", "commanded Δyaw", "swarp", "gz"], rows) + "\n")
+
     md.append(paired(d))
     text = "\n".join(md)
     with open(os.path.join(d, "report.md"), "w") as f:
