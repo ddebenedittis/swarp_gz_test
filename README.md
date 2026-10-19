@@ -79,6 +79,23 @@ src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/<run>/<ckpt>.pt <shard
 The manager draws initial states like swarp's reset at full difficulty (seeded), teleports the bodies, publishes `/goal` (PoseStamped) and `/episode` (Int32 id, `-1` = stopped), and scores success exactly as swarp (`|p - g| < goal_tolerance` and `|Δθ| < angle_tolerance`, checked every `dt`, timeout `max_steps·dt`).
 Each episode is a row of `out/<run name>/episodes.csv`; with `record:=true`, `rec/ep<id>_robot_<i>.npz` holds every step's obs, action, raw scan, poses and T pose.
 
+## Sim-to-sim system identification
+
+The same scripted `(v, ω)` sequences from the same initial states in swarp and in Gazebo (`pusht_policy/sysid/experiments.py`): robot steps and arcs, pushes, the lidar against the T, and swarp's greedy policy from recorded Gazebo episode starts.
+
+```bash
+# Gazebo (container): sim at real time, then the runner
+ros2 launch pusht_gz sim.launch.py n_robots:=2 headless:=true rtf:=1 &
+ros2 run pusht_policy sysid_gz --ros-args -p use_sim_time:=true -p checkpoint:=/opt/swarp/runs/<run>/<ckpt>.pt -p out:=out/sysid
+
+# swarp (host, swarp's venv; imports swarp read-only)
+cd ../swarp && uv run --no-sync python ../swarp_gz_test/src/pusht_policy/scripts/sysid_swarp.py \
+    --checkpoint runs/<run>/<ckpt>.pt --out ../swarp_gz_test/out/sysid --paired ../swarp_gz_test/out/<eval run>
+
+# tables -> out/sysid/report.md
+PYTHONPATH=src/pusht_policy python3 -m pusht_policy.sysid.compare out/sysid
+```
+
 ## Reset
 
 ```python

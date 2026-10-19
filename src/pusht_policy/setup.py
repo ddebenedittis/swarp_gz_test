@@ -24,6 +24,7 @@ setup(
             "policy_node = pusht_policy.policy_node:main",
             "episode_manager = pusht_policy.episode_manager:main",
             "aggregate = pusht_policy.aggregate:main",
+            "sysid_gz = pusht_policy.sysid.gz_runner:main",
         ],
     },
 )

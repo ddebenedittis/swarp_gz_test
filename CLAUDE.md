@@ -49,6 +49,7 @@ pusht_policy
   - `policy_node.py`: one per robot; a step per scan whose stamp is `dt` past the last (not a timer), poses at the nearest stamp, `actor.greedy`.
   - `episode_manager.py`: reset, `/goal` + `/episode`, scoring, `episodes.csv`.
   - `launch/eval.launch.py`, `scripts/eval_shards.bash`, `aggregate.py` (Wilson interval, stdlib only).
+  - `sysid/`: shared experiment definitions, `gz_runner.py` (`sysid_gz`), `compare.py`; the swarp side is `scripts/sysid_swarp.py` (host venv), which pins swarp's state by overriding `PushTLidarScenario._launch_spawn`.
 
 ## Notes
 
