@@ -10,6 +10,7 @@
 # Extra launch args go to every shard's eval.launch.py, e.g. `sample:=true record:=true`; the
 # full command line is kept in out/<run name>/cmd.
 # Shard k uses ROS_DOMAIN_ID ${DOMAIN_BASE:-30} + k: give concurrent runs disjoint bases.
+# BUILD=0 skips the workspace build (a second run started while another is using it).
 set -euo pipefail
 
 WS_DIR="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")"
@@ -25,7 +26,9 @@ mkdir -p "${WS_DIR}/out/${RUN}"
 echo "$0 ${CKPT} ${SHARDS} ${EPISODES} ${RUN} ${BASE_SEED} ${EXTRA[*]}" > "${WS_DIR}/out/${RUN}/cmd"
 
 # Build the workspace once; the shards then share it without rebuilding.
-"${COMPOSE[@]}" run --rm -e COLCON_BUILD=always eval true
+if [[ "${BUILD:-1}" != 0 ]]; then
+    "${COMPOSE[@]}" run --rm -e COLCON_BUILD=always eval true
+fi
 
 names=()
 for k in $(seq 0 $((SHARDS - 1))); do
