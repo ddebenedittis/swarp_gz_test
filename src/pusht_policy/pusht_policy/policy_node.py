@@ -139,6 +139,7 @@ class PolicyNode(Node):
         self.episode = -1
         self.episode_t0 = math.inf  # scans stamped before the start message are stale
         self.last_step_t = -math.inf
+        self.pending: LaserScan | None = None  # a due scan waiting for the poses to catch up
         self.steps = 0
         self.rec: dict[str, list] = {}
         self.get_logger().info(
@@ -153,6 +154,8 @@ class PolicyNode(Node):
     def _on_pose(self, j: int, m: PoseStamped) -> None:
         p = m.pose
         self.poses[j].push(stamp_s(m.header.stamp), (p.position.x, p.position.y, yaw_of(p.orientation)))
+        if self.pending is not None:
+            self._step(self.pending)
 
     def _on_vel(self, j: int, m: TwistStamped) -> None:
         self.vels[j].push(stamp_s(m.header.stamp), (m.twist.linear.x, m.twist.linear.y))
@@ -169,6 +172,7 @@ class PolicyNode(Node):
             return
         self._flush()
         self.episode = m.data
+        self.pending = None
         if self.episode >= 0:
             self.builder.reset()
             self.episode_t0 = self.get_clock().now().nanoseconds * 1e-9
@@ -194,10 +198,23 @@ class PolicyNode(Node):
         # Step every dt; a scan period's slack absorbs stamp jitter.
         if t - self.last_step_t < self.dt - 0.5 * max(scan.scan_time, 0.01):
             return
+        if self.pending is not None:
+            self.get_logger().warn(
+                f"no pose within {self.max_pose_age}s of scan {stamp_s(self.pending.header.stamp):.3f} "
+                "before the next one", throttle_duration_sec=2.0,
+            )
+        self._step(scan)
+
+    def _step(self, scan: LaserScan) -> None:
+        """One control step on ``scan``, or, when some pose has no sample near its stamp
+        yet (a pose relay lagging behind the lidar), park it until a pose arrives: skipping
+        it would stretch this step to the next scan and space the stacked frames unevenly."""
+        t = stamp_s(scan.header.stamp)
         state = self._state_at(t)
         if state is None:
-            self.get_logger().warn(f"no pose within {self.max_pose_age}s of scan {t:.3f}", throttle_duration_sec=2.0)
+            self.pending = scan
             return
+        self.pending = None
         pos, vel, theta = state
         a, cfg = self.agent, self.cfg
         me = (pos[a, 0], pos[a, 1], theta[a])
