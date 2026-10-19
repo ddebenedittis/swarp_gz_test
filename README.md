@@ -80,6 +80,9 @@ src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/<run>/<ckpt>.pt <shard
 The manager draws initial states like swarp's reset at full difficulty (seeded), teleports the bodies, publishes `/goal` (PoseStamped) and `/episode` (Int32 id, `-1` = stopped), and scores success exactly as swarp (`|p - g| < goal_tolerance` and `|Δθ| < angle_tolerance`, checked every `dt`, timeout `max_steps·dt`).
 Each episode is a row of `out/<run name>/episodes.csv`; with `record:=true`, `rec/ep<id>_robot_<i>.npz` holds every step's obs, action, raw scan, poses and T pose.
 
+Results for the Limo-scale checkpoints, with failure modes and how to reproduce them: [docs/results.md](docs/results.md).
+Per-run failure classes, stalls and squeeze locks: `PYTHONPATH=src/pusht_policy python3 -m pusht_policy.failure_modes out/<run>`.
+
 ## Sim-to-sim system identification
 
 The same scripted `(v, ω)` sequences from the same initial states in swarp and in Gazebo (`pusht_policy/sysid/experiments.py`): robot steps and arcs, pushes, the lidar against the T, and swarp's greedy policy from recorded Gazebo episode starts.

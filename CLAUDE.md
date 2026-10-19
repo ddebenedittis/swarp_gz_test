@@ -47,9 +47,9 @@ limo_gz_description   pusht_gz_plugins
 - `pusht_policy` (ament_python), runs swarp checkpoints (`/opt/swarp` must be on the branch the checkpoint was trained on):
   - `obs.py`: pure-numpy rebuild of swarp's `pusht_lidar` obs (`ObsConfig.from_checkpoint`, `ObsBuilder`, `scan_to_rays`, `label_rays`); `test/test_obs_parity.py` checks it bit-for-bit against `PushTLidarScenario`. Do not change its semantics without rerunning `python3 -m pytest src/pusht_policy/test`.
   - `task.py`: `Task.from_checkpoint` (geometry, tolerances, horizon via the real scenario object) and `sample_episode` (swarp's reset kernels in numpy, overlapping spawns redrawn).
-  - `policy_node.py`: one per robot; a step per scan whose stamp is `dt` past the last (not a timer), poses at the nearest stamp, `actor.greedy`.
+  - `policy_node.py`: one per robot; a step per scan whose stamp is `dt` past the last (not a timer), poses at the nearest stamp (a due scan waits for a lagging pose), `actor.greedy` or, with `sample`, the trainer's tanh-Gaussian draw.
   - `episode_manager.py`: reset, `/goal` + `/episode`, scoring, `episodes.csv`.
-  - `launch/eval.launch.py`, `scripts/eval_shards.bash`, `aggregate.py` (Wilson interval, stdlib only).
+  - `launch/eval.launch.py`, `scripts/eval_shards.bash` (staggered shards, restarts a shard that never started; `DOMAIN_BASE`/`BUILD=0` for concurrent runs), `aggregate.py` (Wilson interval, stdlib only), `failure_modes.py` (failure classes and squeeze locks from `rec/`); swarp-side references: `scripts/swarp_reference.py` (host venv). Results: `docs/results.md`.
   - `sysid/`: shared experiment definitions, `gz_runner.py` (`sysid_gz`), `compare.py`; the swarp side is `scripts/sysid_swarp.py` (host venv), which pins swarp's state by overriding `PushTLidarScenario._launch_spawn`.
 
 ## Notes
