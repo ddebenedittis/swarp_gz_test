@@ -178,6 +178,41 @@ def paired(d: str) -> str:
     )
 
 
+# --------------------------------------------------------------------- turning in contact
+
+
+def contact_metrics(e: Experiment, r: dict) -> list[str]:
+    """Per active robot: yaw rate / command, Δyaw, displacement, mean |force on T|; then the T."""
+    n_on = on_steps(e)
+    cells = []
+    for i in [i for i in range(2) if np.abs(e.cmds[:, i]).sum() > 0]:
+        yaw = np.unwrap(r["robots"][: n_on + 1, i, 2])
+        rate = (yaw[-1] - yaw[0]) / (n_on * DT)
+        disp = float(np.hypot(*(r["robots"][n_on, i, :2] - r["robots"][0, i, :2])))
+        f = np.hypot(*r["contact"][1 : n_on + 1, i].T).mean() if "contact" in r else float("nan")
+        cells.append(f"ω {rate:+.2f} ({rate / e.meta['w']:.2f}×), {disp:.2f} m, F {f:.1f} N")
+    tee = r["tee"]
+    cells.append(f"T {np.hypot(*(tee[n_on, :2] - tee[0, :2])):.2f} m {np.degrees(wrap(tee[n_on, 2] - tee[0, 2])):+.0f}°")
+    return cells
+
+
+def contact_section(d: str, exps: dict) -> str:
+    names = [e for e in exps.values() if e.group == "contact"]
+    tags = sorted({os.path.basename(p).split("_", 1)[0] for p in glob.glob(os.path.join(d, "*_flush_*.npz"))})
+    if not names or not tags:
+        return ""
+    rows = []
+    for e in names:
+        for tag in tags:
+            r = load(d, tag, e.name)
+            if r is not None:
+                rows.append([e.name, tag, " ; ".join(contact_metrics(e, r))])
+    return (
+        "## 5. Turning flush against the T (per active robot: achieved yaw rate, displacement, mean |force on the T|; then the T)\n\n"
+        + table(["exp", "sim", "result"], rows) + "\n\nswarp's force is inferred from its velocity-mode drive (speed·heading + F·sub_dt/m); gz's from the T's contact sensor.\n"
+    )
+
+
 # --------------------------------------------------------------------- report
 
 
@@ -248,26 +283,7 @@ def main(argv=None) -> None:
          "range MAE (both T) [m]", "rays T in swarp, not in gz"], rows
     ) + "\n\nRay k points at k·11.25° CCW from the heading; bearing β puts the face at ray β/11.25.\n")
 
-    rows = []
-    for e in [x for x in exps.values() if x.group == "contact"]:
-        s, g = load(d, "swarp", e.name), load(d, "gz", e.name)
-        if s is None or g is None:
-            continue
-        n_on = on_steps(e)
-        def cm(r):
-            out = []
-            for i in [i for i in range(2) if np.abs(e.cmds[:, i]).sum() > 0]:
-                dyaw = float(np.degrees(np.unwrap(r["robots"][: n_on + 1, i, 2])[-1] - r["robots"][0, i, 2]))
-                disp = float(np.hypot(*(r["robots"][n_on, i, :2] - r["robots"][0, i, :2])))
-                out.append(f"{dyaw:+.0f}° / {disp:.2f} m")
-            tee = r["tee"]
-            out.append(f"{np.hypot(*(tee[n_on, :2] - tee[0, :2])):.2f} m, {np.degrees(wrap(tee[n_on, 2] - tee[0, 2])):+.0f}°")
-            return out
-        ideal = np.degrees(e.meta["w"] * n_on * DT)
-        rows.append([e.name, f"{ideal:+.0f}°", " ; ".join(cm(s)), " ; ".join(cm(g))])
-    if rows:
-        md.append("## 5. Turning while pressed against the T (per robot: Δyaw / displacement ; T: displacement, Δyaw)\n\n" + table(
-            ["exp", "commanded Δyaw", "swarp", "gz"], rows) + "\n")
+    md.append(contact_section(d, exps))
 
     md.append(paired(d))
     text = "\n".join(md)

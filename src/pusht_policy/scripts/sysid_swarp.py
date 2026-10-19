@@ -77,9 +77,16 @@ def make_env(kw, n_envs, dt, substeps, pin, n_agents=2):
     return env, scen
 
 
-def snapshot(scen):
+def snapshot(scen, sub_dt=None):
     s = scen.world.state
-    return {
+    out = {}
+    if sub_dt is not None:
+        # The contact force on each robot, from its last sub-step: a velocity-mode diff drive
+        # moves at speed * heading + force * sub_dt / mass. Reported as the force on the T.
+        head = torch.stack([torch.cos(s.theta), torch.sin(s.theta)], -1)
+        f_robot = (s.vel - s.speed.unsqueeze(-1) * head) * float(scen.agent_mass) / sub_dt
+        out["contact"] = (-f_robot).numpy().copy()
+    return out | {
         "robots": torch.cat([s.pos, s.theta.unsqueeze(-1)], -1).numpy().copy(),
         "robots_vel": s.vel.numpy().copy(),
         "robots_w": s.ang_vel.numpy().copy(),
@@ -89,7 +96,7 @@ def snapshot(scen):
     }
 
 
-def run_scripted(kw, exps: list[Experiment], substeps: int, out: str) -> None:
+def run_scripted(kw, exps: list[Experiment], substeps: int, out: str, tag: str = "swarp") -> None:
     """All experiments at once, one env each, padded with zero commands to the longest."""
     n = len(exps)
     steps = max(len(e.cmds) for e in exps)
@@ -100,21 +107,22 @@ def run_scripted(kw, exps: list[Experiment], substeps: int, out: str) -> None:
     }
     env, scen = make_env(kw, n, DT, substeps, pin)
     lid = {"ranges": scen._lcache["ranges"].numpy().copy(), "cls": scen._lcache["hit_class"].numpy().copy()}
-    traj = [snapshot(scen)]
+    sub_dt = DT / substeps
+    traj = [snapshot(scen, sub_dt)]
     cmds = np.zeros((steps, n, 2, 2), dtype=np.float32)
     for i, e in enumerate(exps):
         cmds[: len(e.cmds), i] = e.cmds
     for k in range(steps):
         env.step(torch.from_numpy(cmds[k]))
-        traj.append(snapshot(scen))
+        traj.append(snapshot(scen, sub_dt))
     for i, e in enumerate(exps):
         m = len(e.cmds)
         rec = {key: np.stack([t[key][i] for t in traj[: m + 1]]) for key in traj[0]}
         np.savez(
-            os.path.join(out, f"swarp_{e.name}.npz"),
+            os.path.join(out, f"{tag}_{e.name}.npz"),
             t=np.arange(m + 1) * DT, cmds=e.cmds, rays=lid["ranges"][i, 0], cls=lid["cls"][i, 0], **rec,
         )
-    print(f"swarp: {n} scripted experiments -> {out}")
+    print(f"{tag}: {n} scripted experiments -> {out}")
 
 
 def run_paired(ckpt_path: str, kw, meta, eval_dir: str, out: str) -> None:
@@ -163,18 +171,35 @@ def run_paired(ckpt_path: str, kw, meta, eval_dir: str, out: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--checkpoint", required=True)
+    ap.add_argument("--checkpoint", help="scenario kwargs from this checkpoint (and the paired policy)")
+    ap.add_argument("--recipe", help="scenario kwargs from SPECS[recipe] instead of a checkpoint")
+    ap.add_argument("--scen-kwarg", action="append", default=[], metavar="K=V",
+                    help="override a scenario kwarg (Python literal), e.g. cmd_gain_w=0.79")
+    ap.add_argument("--tag", default="swarp", help="output prefix: <out>/<tag>_<exp>.npz")
+    ap.add_argument("--group", help="only this experiment group (robot, push, lidar, contact)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--substeps", type=int, default=16, help="per DT=0.1 step (6.25 ms, as both recipes)")
     ap.add_argument("--paired", help="Gazebo eval run dir (episodes.csv) to replay with swarp's policy")
     ap.add_argument("--only", choices=("scripted", "paired"))
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
-    meta = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
-    kw = {k: parse(v) for k, v in meta["scen_kwargs"].items()}
+    meta = None
+    if args.checkpoint:
+        meta = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+        kw = {k: parse(v) for k, v in meta["scen_kwargs"].items()}
+    elif args.recipe:
+        from swarp.rl.recipes import SPECS
+
+        kw = dict(SPECS[args.recipe].scen_kwargs)
+    else:
+        raise SystemExit("give --checkpoint or --recipe")
+    for item in args.scen_kwarg:
+        k, v = item.split("=", 1)
+        kw[k] = parse(v)
     if args.only != "paired":
-        run_scripted(kw, all_experiments(), args.substeps, args.out)
-    if args.paired and args.only != "scripted":
+        exps = [e for e in all_experiments() if not args.group or e.group == args.group]
+        run_scripted(kw, exps, args.substeps, args.out, args.tag)
+    if args.paired and args.only != "scripted" and meta is not None:
         run_paired(args.checkpoint, kw, meta, args.paired, args.out)
 
 

@@ -93,8 +93,14 @@ ros2 run pusht_policy sysid_gz --ros-args -p use_sim_time:=true -p checkpoint:=/
 cd ../swarp && uv run --no-sync python ../swarp_gz_test/src/pusht_policy/scripts/sysid_swarp.py \
     --checkpoint runs/<run>/<ckpt>.pt --out ../swarp_gz_test/out/sysid --paired ../swarp_gz_test/out/<eval run>
 
-# quasi-static pushing reference (host, needs cvxpy) -> out/sysid/reference.md
-python3 src/pusht_policy/scripts/pushing_reference.py --viscous
+# swarp without a checkpoint: a recipe's kwargs, overrides, one group, a tag per config
+uv run --no-sync python ../swarp_gz_test/src/pusht_policy/scripts/sysid_swarp.py --recipe pusht_lidar_limo_dr \
+    --tag swarp-L3b --group contact --scen-kwarg cmd_gain_w=0.79 --out ../swarp_gz_test/out/sysid/contact
+# Gazebo contact forces: add tee_contact_sensor:=true to the sim launch (bridged to /tee/contacts)
+
+# quasi-static references (host, need cvxpy)
+python3 src/pusht_policy/scripts/pushing_reference.py --viscous      # pushes -> out/sysid/reference.md
+python3 src/pusht_policy/scripts/pressed_turn_reference.py           # turning flush against the T
 
 # tables -> out/sysid/report.md
 PYTHONPATH=src/pusht_policy python3 -m pusht_policy.sysid.compare out/sysid

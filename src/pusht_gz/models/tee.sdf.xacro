@@ -122,12 +122,16 @@
         </inertial>
       </xacro:unless>
       <xacro:if value="$(arg contact_sensor)">
-        <!-- Diagnostics: the bar's contacts, gz topic
-             /world/<world>/model/<name>/link/link/sensor/contacts/contact. -->
+        <!-- Diagnostics: the T's contacts with forces, gz topic
+             /world/<world>/model/<name>/link/link/sensor/contacts/contact
+             (bridged to /<name>/contacts by sim.launch.py). -->
         <sensor name="contacts" type="contact">
           <always_on>true</always_on>
           <update_rate>50</update_rate>
-          <contact><collision>bar_collision</collision></contact>
+          <contact>
+            <collision>bar_collision</collision>
+            <collision>stem_collision</collision>
+          </contact>
         </sensor>
       </xacro:if>
       <xacro:tee_box part="bar" oy="${oy_bar}" lx="${bl}" ly="${bw}"/>

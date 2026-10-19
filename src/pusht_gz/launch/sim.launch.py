@@ -48,7 +48,7 @@ ARGS = {
     "tee_mass": ("0.5", "T mass [kg]"),
     "tee_mu": ("0.3", "T friction coefficient (floor and robots; the floor itself has mu 1)"),
     "tee_floor_friction": ("coulomb", "coulomb (isotropic, PlanarCoulombFriction) or contact (DART's)"),
-    "tee_contact_sensor": ("false", "publish the T bar contacts on gz (diagnostics)"),
+    "tee_contact_sensor": ("false", "T contact sensor with forces, bridged to /tee/contacts (diagnostics)"),
     "tee_x": ("0.0", "T initial x [m]"),
     "tee_y": ("0.0", "T initial y [m]"),
     "tee_yaw": ("0.0", "T initial yaw [rad]"),
@@ -83,7 +83,7 @@ def _bridge_entry(ros: str, ros_type: str, gz_type: str, direction: str, gz: str
     }
 
 
-def _bridge_config(robots: list[str]) -> list[dict]:
+def _bridge_config(robots: list[str], contacts: bool = False) -> list[dict]:
     odom = ("nav_msgs/msg/Odometry", "gz.msgs.Odometry", "GZ_TO_ROS")
     tf = ("tf2_msgs/msg/TFMessage", "gz.msgs.Pose_V", "GZ_TO_ROS")
     cfg = [_bridge_entry("/clock", "rosgraph_msgs/msg/Clock", "gz.msgs.Clock", "GZ_TO_ROS")]
@@ -97,6 +97,11 @@ def _bridge_config(robots: list[str]) -> list[dict]:
             _bridge_entry(f"/{r}/joint_states", "sensor_msgs/msg/JointState", "gz.msgs.Model", "GZ_TO_ROS"),
         ]
     cfg += [_bridge_entry("/tee/gt_odom", *odom), _bridge_entry("/tf", *tf, gz="/tee/gt_tf")]
+    if contacts:
+        cfg.append(_bridge_entry(
+            "/tee/contacts", "ros_gz_interfaces/msg/Contacts", "gz.msgs.Contacts", "GZ_TO_ROS",
+            gz=f"/world/{WORLD}/model/tee/link/link/sensor/contacts/contact",
+        ))
     cfg.append({
         "service_name": f"/world/{WORLD}/set_pose",
         "ros_type_name": "ros_gz_interfaces/srv/SetEntityPose",
@@ -168,7 +173,8 @@ def _setup(context):
                           float(a["goal_x"]), float(a["goal_y"]), float(a["goal_yaw"])))
 
     with tempfile.NamedTemporaryFile("w", prefix="pusht_bridge_", suffix=".yaml", delete=False) as f:
-        yaml.safe_dump(_bridge_config(robots), f, sort_keys=False)
+        contacts = a["tee_contact_sensor"].lower() in ("1", "true", "yes")
+        yaml.safe_dump(_bridge_config(robots, contacts), f, sort_keys=False)
     actions += [
         Node(
             package="ros_gz_bridge",

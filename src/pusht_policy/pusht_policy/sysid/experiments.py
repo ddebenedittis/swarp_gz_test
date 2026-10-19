@@ -108,24 +108,32 @@ def lidar_experiments() -> list[Experiment]:
 BAR_BOTTOM = 0.0559  # T frame: crossbar underside (outside the stem, |x| > 0.15)
 
 
+STEM_SIDE = 0.15  # T frame: stem side faces x = +-0.15
+STEM_CY = -0.29411764705882354  # stem centre y
+FLUSH_CMDS = ((0.0, 0.9), (0.28, 0.9), (-0.1, 0.9))
+
+
 def contact_experiments() -> list[Experiment]:
-    """Turning while pressed flat against the T: alone (the T can give) and sandwiched
-    between two robots pressing opposite faces (it cannot)."""
+    """Turning while flush against the T: against the crossbar's top face and the stem's
+    side face, alone (the T can give), and sandwiched between two robots pressing opposite
+    faces of the crossbar (it cannot)."""
     tee = (0.0, 0.0, 0.0)
     gap = 0.002
-    r_top = _behind((0.0, BAR_TOP), -math.pi / 2, gap)
-    out = [
-        Experiment("turn_flush_v0.28_w0.9", "contact", [r_top, PARK_2], tee,
-                   _seq((5.0, 0.28, 0.9), (1.0, 0, 0)), {"v": 0.28, "w": 0.9}),
-        Experiment("turn_flush_v0_w0.9", "contact", [r_top, PARK_2], tee,
-                   _seq((5.0, 0.0, 0.9), (1.0, 0, 0)), {"v": 0.0, "w": 0.9}),
-    ]
+    faces = {
+        "bar": _behind((0.0, BAR_TOP), -math.pi / 2, gap),
+        "stem": _behind((-STEM_SIDE, STEM_CY), 0.0, gap),
+    }
+    out = []
+    for face, r in faces.items():
+        for v, w in FLUSH_CMDS:
+            out.append(Experiment(f"flush_{face}_v{v:g}_w{w:g}", "contact", [r, PARK_2], tee,
+                                  _seq((3.0, v, w), (1.0, 0, 0)), {"v": v, "w": w}))
     x = 0.33
     r1 = _behind((x, BAR_TOP), -math.pi / 2, gap)
     r2 = _behind((x, BAR_BOTTOM), math.pi / 2, gap)
-    for v in (0.28, 0.0):
-        out.append(Experiment(f"turn_sandwich_v{v:g}_w0.9", "contact", [r1, r2], tee,
-                              _seq((5.0, v, 0.9), (1.0, 0, 0), robots=2), {"v": v, "w": 0.9}))
+    for v, w in FLUSH_CMDS:
+        out.append(Experiment(f"sandwich_v{v:g}_w{w:g}", "contact", [r1, r2], tee,
+                              _seq((3.0, v, w), (1.0, 0, 0), robots=2), {"v": v, "w": w}))
     return out
 
 

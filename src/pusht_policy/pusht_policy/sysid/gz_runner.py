@@ -26,6 +26,11 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
+try:
+    from ros_gz_interfaces.msg import Contacts
+except ImportError:  # pragma: no cover
+    Contacts = None
+
 from pusht_gz.gz_reset import GzWorld
 from pusht_policy.obs import ObsConfig, label_rays, scan_to_rays
 from pusht_policy.policy_node import stamp_s, yaw_of
@@ -54,6 +59,10 @@ class SysidGz(Node):
         for b in BODIES:
             self.create_subscription(Odometry, f"/{b}/gt_odom", lambda m, b=b: self._on_odom(b, m), 50)
         self.create_subscription(LaserScan, "/robot_1/scan", self._on_scan, qos_profile_sensor_data)
+        # Robot -> T contact forces, when the sim runs with tee_contact_sensor:=true.
+        self.contacts = []  # (t, F1x, F1y, F2x, F2y): horizontal force on the T from robot 1, 2
+        if Contacts is not None:
+            self.create_subscription(Contacts, "/tee/contacts", self._on_contacts, 50)
         self.cmd = [self.create_publisher(Twist, f"/robot_{i}/cmd_vel", 10) for i in (1, 2)]
         os.makedirs(self.out, exist_ok=True)
 
@@ -67,6 +76,20 @@ class SysidGz(Node):
         row = (stamp_s(m.header.stamp), p.position.x, p.position.y, yaw, vx, vy, tw.angular.z)
         self.last[b] = row
         self.raw[b].append(row)
+
+    def _on_contacts(self, m) -> None:
+        f = np.zeros(4)
+        for c in m.contacts:
+            n1, n2 = c.collision1.name, c.collision2.name
+            other = n2 if n1.startswith("tee::") else n1
+            on_tee_is_1 = n1.startswith("tee::")
+            for i, r in enumerate(("robot_1", "robot_2")):
+                if other.startswith(r + "::"):
+                    for w in c.wrenches:
+                        b = w.body_1_wrench if on_tee_is_1 else w.body_2_wrench
+                        f[2 * i] += b.force.x
+                        f[2 * i + 1] += b.force.y
+        self.contacts.append((stamp_s(m.header.stamp), *f))
 
     def _on_scan(self, m: LaserScan) -> None:
         self.scan = m
@@ -94,7 +117,11 @@ class SysidGz(Node):
         t = self.now()
         self.spin_until(lambda: self.now() - t >= 0.5, what="stop")
         poses = {"robot_1": e.robots[0], "robot_2": e.robots[1], "tee": e.tee}
-        if not self.gz.set_poses_at_rest(poses, 0.3):
+        for attempt in range(3):  # the service can time out on a loaded machine
+            if self.gz.set_poses_at_rest(poses, 0.3):
+                break
+            self.get_logger().warn(f"{e.name}: teleport failed (attempt {attempt})")
+        else:
             raise RuntimeError(f"{e.name}: teleport failed")
         t_tp = (self.gz.last_sim_time() or self.now()) + 0.05
         self.spin_until(
@@ -132,6 +159,7 @@ class SysidGz(Node):
     def run_motion(self, e: Experiment) -> None:
         for b in BODIES:
             self.raw[b] = []
+        self.contacts = []
         n = len(e.cmds)
         t0 = self.now() + 0.05
         k = 0
@@ -154,11 +182,19 @@ class SysidGz(Node):
                 + [np.interp(grid, r[:, 0], r[:, c]) for c in (4, 5, 6)]
             )
         robots = np.stack([rec["robot_1"], rec["robot_2"]], 1)  # [T, 2, 6]
+        # Mean robot -> T force over each control step (zero when nothing touched).
+        cf = np.array(self.contacts).reshape(-1, 5)
+        contact = np.zeros((n + 1, 2, 2))
+        for k in range(1, n + 1):
+            sel = (cf[:, 0] > grid[k - 1]) & (cf[:, 0] <= grid[k])
+            if sel.any():
+                contact[k] = cf[sel, 1:].mean(0).reshape(2, 2)
         np.savez(
             os.path.join(self.out, f"gz_{e.name}.npz"),
             t=grid - t0, cmds=e.cmds,
             robots=robots[..., :3], robots_vel=robots[..., 3:5], robots_w=robots[..., 5],
             tee=rec["tee"][:, :3], tee_vel=rec["tee"][:, 3:5], tee_w=rec["tee"][:, 5],
+            contact=contact, raw_contacts=np.column_stack([cf[:, 0] - t0, cf[:, 1:]]) if len(cf) else cf,
             **{f"raw_{b}": np.column_stack([raw[b][:, 0] - t0, raw[b][:, 1:]]) for b in BODIES},
         )
 
