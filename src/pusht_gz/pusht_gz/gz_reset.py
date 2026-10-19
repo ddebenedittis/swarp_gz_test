@@ -90,6 +90,10 @@ class GzWorld:
         req.pause = paused
         return self._request(f"/world/{self.world}/control", req, WorldControl)
 
+    def last_sim_time(self) -> float | None:
+        """Simulation time at the end of the last :meth:`wait_sim` (None before one ran)."""
+        return self._sim_time
+
     def wait_sim(self, dt: float, timeout: float = 30.0) -> bool:
         """Block until the simulation clock advances by ``dt`` seconds (False on timeout).
 

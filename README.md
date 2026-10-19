@@ -64,6 +64,21 @@ Do not set `LIBGL_ALWAYS_SOFTWARE=1` with `/dev/dri` mounted: ogre2 then segfaul
 | `/clock` | `rosgraph_msgs/Clock` | sim time |
 | `/world/pusht/set_pose` | `ros_gz_interfaces/srv/SetEntityPose` | teleport a model (service) |
 
+## Evaluate a checkpoint
+
+```bash
+# inside the container (checkpoints under ../swarp are at /opt/swarp)
+ros2 launch pusht_policy eval.launch.py checkpoint:=/opt/swarp/runs/<run>/<scenario>_final.pt episodes:=50 seed:=0 record:=true
+ros2 run pusht_policy aggregate out/<run name>
+
+# on the host: N parallel headless containers (own ROS_DOMAIN_ID, GZ_PARTITION and seed each)
+src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/<run>/<ckpt>.pt <shards> <episodes per shard> [run name] [base seed] [launch args ...]
+```
+
+`eval.launch.py` reads the robot count and the T geometry from the checkpoint, starts the sim, one `policy_node` per robot and the `episode_manager`, and exits after the last episode.
+The manager draws initial states like swarp's reset at full difficulty (seeded), teleports the bodies, publishes `/goal` (PoseStamped) and `/episode` (Int32 id, `-1` = stopped), and scores success exactly as swarp (`|p - g| < goal_tolerance` and `|Δθ| < angle_tolerance`, checked every `dt`, timeout `max_steps·dt`).
+Each episode is a row of `out/<run name>/episodes.csv`; with `record:=true`, `rec/ep<id>_robot_<i>.npz` holds every step's obs, action, raw scan, poses and T pose.
+
 ## Reset
 
 ```python

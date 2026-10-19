@@ -32,7 +32,7 @@ limo_gz_description
     ↑
 pusht_gz
     ↑
-pusht_policy   (deployment: obs builder, policy node, episode manager; separate owner)
+pusht_policy
 ```
 
 - `limo_gz_description` (ament_cmake): `urdf/limo.urdf.xacro`, spawned as URDF (sdformat converts it). Frames prefixed `robot_i/`, topics under `/robot_i/`. DiffDrive (4 joints), OdometryPublisher ground truth, JointStatePublisher, `gpu_lidar`.
@@ -43,6 +43,12 @@ pusht_policy   (deployment: obs builder, policy node, episode manager; separate 
   - `pusht_gz/models.py`: xacro rendering helpers used by the launch file.
   - `pusht_gz/gz_reset.py`: `GzWorld.set_pose / set_poses / set_poses_at_rest / pause` through `/world/pusht/set_pose[_vector]`.
   - `pusht_gz/gt_pose_relay.py`: `/b/gt_odom` → `/b/pose` (PoseStamped, `world`) and `/b/vel` (world-frame TwistStamped).
+- `pusht_policy` (ament_python), runs swarp checkpoints (`/opt/swarp` must be on the branch the checkpoint was trained on):
+  - `obs.py`: pure-numpy rebuild of swarp's `pusht_lidar` obs (`ObsConfig.from_checkpoint`, `ObsBuilder`, `scan_to_rays`, `label_rays`); `test/test_obs_parity.py` checks it bit-for-bit against `PushTLidarScenario`. Do not change its semantics without rerunning `python3 -m pytest src/pusht_policy/test`.
+  - `task.py`: `Task.from_checkpoint` (geometry, tolerances, horizon via the real scenario object) and `sample_episode` (swarp's reset kernels in numpy, overlapping spawns redrawn).
+  - `policy_node.py`: one per robot; a step per scan whose stamp is `dt` past the last (not a timer), poses at the nearest stamp, `actor.greedy`.
+  - `episode_manager.py`: reset, `/goal` + `/episode`, scoring, `episodes.csv`.
+  - `launch/eval.launch.py`, `scripts/eval_shards.bash`, `aggregate.py` (Wilson interval, stdlib only).
 
 ## Notes
 
@@ -53,4 +59,5 @@ pusht_policy   (deployment: obs builder, policy node, episode manager; separate 
 - gz Python bindings hold the GIL in `request()`: a live Python subscription callback in the same process makes every service call time out. `GzWorld` subscribes to the clock only inside `wait_sim`.
 - Teleporting keeps velocities; `set_poses_at_rest` teleports, waits sim time, teleports again.
 - OdometryPublisher twist is body-frame; `gt_pose_relay` rotates it to world frame (swarp observes world-frame velocity).
-- `rtf:=0` reaches ~1.6× real time with 2 robots on this machine (physics + 2 lidars).
+- `rtf:=0` reaches ~1.6× real time with 2 robots on this machine (physics + 2 lidars), ~1× with the policies and manager running.
+- `/goal` and `/episode` are transient-local (latched); the policy ignores scans stamped before it received the episode start.
