@@ -30,6 +30,7 @@ ARGS = {
     "headless": ("false", "server only, headless EGL rendering (no GUI)"),
     "rtf": ("1.0", "target real-time factor; 0 runs as fast as possible"),
     "step": ("0.001", "physics step [s]"),
+    "physics_engine": ("dart", "dart or bullet-featherstone"),
     "arena_half": ("2.0", "half side of the drawn arena outline [m] (no walls)"),
     "robot_poses": ("", "'x,y,yaw;x,y,yaw;...' one per robot; default: circle of radius 1.4"),
     "use_mesh": ("true", "Limo meshes as visuals (false: boxes)"),
@@ -37,6 +38,7 @@ ARGS = {
     "max_angular_acceleration": ("3.0", "diff-drive angular acceleration limit [rad/s^2]"),
     "wheel_mu": ("1.0", "wheel friction along the rolling direction"),
     "wheel_mu_lateral": ("0.2", "wheel friction along the axle (skid steer needs it low to turn)"),
+    "body_mu": ("0.1", "robot body friction (robot-T contact)"),
     "lidar_noise_stddev": ("0.01", "lidar Gaussian range noise [m]"),
     "tee_bar_len": ("1.0", "T crossbar length [m]"),
     "tee_bar_width": ("0.3", "T crossbar width [m]"),
@@ -45,6 +47,8 @@ ARGS = {
     "tee_height": ("0.25", "T height [m]"),
     "tee_mass": ("0.5", "T mass [kg]"),
     "tee_mu": ("0.3", "T friction coefficient (floor and robots; the floor itself has mu 1)"),
+    "tee_floor_friction": ("coulomb", "coulomb (isotropic, PlanarCoulombFriction) or contact (DART's)"),
+    "tee_contact_sensor": ("false", "publish the T bar contacts on gz (diagnostics)"),
     "tee_x": ("0.0", "T initial x [m]"),
     "tee_y": ("0.0", "T initial y [m]"),
     "tee_yaw": ("0.0", "T initial yaw [rad]"),
@@ -122,7 +126,10 @@ def _setup(context):
 
     world = models.world_file(
         world_name=WORLD, rtf=a["rtf"], step=a["step"], arena_half=a["arena_half"])
-    gz_args = f"-r -s --headless-rendering {world}" if headless else f"-r {world}"
+    engines = {"dart": "", "bullet-featherstone": "--physics-engine gz-physics-bullet-featherstone-plugin"}
+    gz_args = f"-r {engines[a['physics_engine']]} {world}"
+    if headless:
+        gz_args = "-s --headless-rendering " + gz_args
     actions = [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
@@ -139,6 +146,7 @@ def _setup(context):
             max_angular_acceleration=a["max_angular_acceleration"],
             wheel_mu=a["wheel_mu"],
             wheel_mu_lateral=a["wheel_mu_lateral"],
+            body_mu=a["body_mu"],
             lidar_noise_stddev=a["lidar_noise_stddev"],
         )
         actions += [

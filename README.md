@@ -43,6 +43,7 @@ Do not set `LIBGL_ALWAYS_SOFTWARE=1` with `/dev/dri` mounted: ogre2 then segfaul
 | `lidar_noise_stddev` | 0.01 | lidar range noise [m] |
 | `tee_bar_len`, `tee_bar_width`, `tee_stem_len`, `tee_stem_width`, `tee_height` | 1.0, 0.3, 0.7, 0.3, 0.25 | T geometry [m] |
 | `tee_mass`, `tee_mu` | 0.5, 0.3 | T mass [kg] and friction |
+| `tee_floor_friction` | coulomb | `coulomb`: isotropic Coulomb floor friction from `pusht_gz_plugins` (the T on frictionless supports); `contact`: DART's contact friction, which barely turns the T under off-centre pushes |
 | `tee_x`, `tee_y`, `tee_yaw` | 0, 0, 0 | T initial pose |
 | `goal_x`, `goal_y`, `goal_yaw` | 0.8, 0.8, 0.5 | goal marker pose |
 | `use_mesh` | true | Limo meshes (false: boxes) |
@@ -91,6 +92,9 @@ ros2 run pusht_policy sysid_gz --ros-args -p use_sim_time:=true -p checkpoint:=/
 # swarp (host, swarp's venv; imports swarp read-only)
 cd ../swarp && uv run --no-sync python ../swarp_gz_test/src/pusht_policy/scripts/sysid_swarp.py \
     --checkpoint runs/<run>/<ckpt>.pt --out ../swarp_gz_test/out/sysid --paired ../swarp_gz_test/out/<eval run>
+
+# quasi-static pushing reference (host, needs cvxpy) -> out/sysid/reference.md
+python3 src/pusht_policy/scripts/pushing_reference.py --viscous
 
 # tables -> out/sysid/report.md
 PYTHONPATH=src/pusht_policy python3 -m pusht_policy.sysid.compare out/sysid

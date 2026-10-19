@@ -274,7 +274,7 @@ def scan_to_rays(
     *,
     pose: Sequence[float] = (0.0, 0.0, 0.0),
     own_half: Sequence[float] | None = None,
-    own_margin: float = 0.0,
+    own_margin: float = -0.03,
     max_gap: float = 0.15,
     body_frame: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -308,9 +308,10 @@ def scan_to_rays(
     with a 7 mm mean range error against 56 mm; most of the remaining mismatches are
     surfaces the centre sees and the mount does not.
 
-    Points inside the robot's own footprint (``own_half`` + ``own_margin``) are dropped
-    first, since swarp's robot never sees itself. A margin of zero keeps a T pressed
-    against the bumper, which swarp's centre rays do see.
+    Points inside the robot's own footprint grown by ``own_margin`` are dropped first, since
+    swarp's robot never sees itself. The default -0.03 drops only points more than 3 cm
+    inside: a T touching the robot's side or rear returns points scattered by the range
+    noise on both sides of the footprint edge, and swarp's centre rays see that T.
     """
     pts, valid = scan_points(
         ranges, angle_min, angle_increment, range_min, range_max, mount_xy, mount_yaw

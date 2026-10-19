@@ -17,6 +17,8 @@
   <xacro:arg name="height" default="0.25"/>
   <xacro:arg name="mass" default="0.5"/>
   <xacro:arg name="mu" default="0.3"/>
+  <xacro:arg name="floor_friction" default="coulomb"/>
+  <xacro:arg name="contact_sensor" default="false"/>
   <xacro:arg name="gt_publish_frequency" default="50"/>
   <xacro:arg name="world_frame" default="world"/>
 
@@ -27,6 +29,18 @@
   <xacro:property name="sw" value="$(arg stem_width)"/>
   <xacro:property name="mass" value="$(arg mass)"/>
   <xacro:property name="mu" value="$(arg mu)"/>
+  <!-- floor_friction:
+       contact  the boxes rest on the floor and DART's contact friction acts. Its friction
+                pyramid decouples the two tangent axes, so a T sliding along one axis keeps
+                the full static friction of the other and an off-centre flat push barely
+                turns it (sysid bar_off0.2: -0.4 deg/m against -64 deg/m quasi-static).
+       coulomb  the T stands on three frictionless spheres, its boxes clear the floor (they
+                still collide with the robots), and the PlanarCoulombFriction system
+                (pusht_gz_plugins) applies isotropic Coulomb friction of a uniform pressure
+                over the footprint. -->
+  <xacro:property name="coulomb" value="${'$(arg floor_friction)' == 'coulomb' and '$(arg goal)' != 'true'}"/>
+  <xacro:property name="foot_r" value="0.004"/>
+  <xacro:property name="lift" value="${2.5 * foot_r if coulomb else 0.0}"/>
 
   <!-- Area centroid: the bar is centred at y = 0, the stem at y_stem. -->
   <xacro:property name="a_bar" value="${bl * bw}"/>
@@ -46,15 +60,26 @@
     <xacro:property name="h" value="$(arg height)"/>
   </xacro:unless>
 
+  <xacro:macro name="foot" params="k x y">
+    <collision name="foot_${k}">
+      <pose>${x} ${y} ${foot_r} 0 0 0</pose>
+      <geometry><sphere><radius>${foot_r}</radius></sphere></geometry>
+      <surface>
+        <friction><ode><mu>0</mu><mu2>0</mu2></ode></friction>
+      </surface>
+    </collision>
+  </xacro:macro>
+
   <xacro:macro name="tee_box" params="part oy lx ly">
     <xacro:unless value="$(arg goal)">
       <collision name="${part}_collision">
-        <pose>0 ${oy} ${h / 2} 0 0 0</pose>
-        <geometry><box><size>${lx} ${ly} ${h}</size></box></geometry>
+        <pose>0 ${oy} ${(h + lift) / 2} 0 0 0</pose>
+        <geometry><box><size>${lx} ${ly} ${h - lift}</size></box></geometry>
         <surface>
           <friction><ode><mu>${mu}</mu><mu2>${mu}</mu2></ode></friction>
         </surface>
       </collision>
+
       <visual name="${part}_visual">
         <pose>0 ${oy} ${h / 2} 0 0 0</pose>
         <geometry><box><size>${lx} ${ly} ${h}</size></box></geometry>
@@ -96,9 +121,33 @@
           </inertia>
         </inertial>
       </xacro:unless>
+      <xacro:if value="$(arg contact_sensor)">
+        <!-- Diagnostics: the bar's contacts, gz topic
+             /world/<world>/model/<name>/link/link/sensor/contacts/contact. -->
+        <sensor name="contacts" type="contact">
+          <always_on>true</always_on>
+          <update_rate>50</update_rate>
+          <contact><collision>bar_collision</collision></contact>
+        </sensor>
+      </xacro:if>
       <xacro:tee_box part="bar" oy="${oy_bar}" lx="${bl}" ly="${bw}"/>
+      <xacro:if value="${coulomb}">
+        <!-- Supports only (frictionless): their triangle holds the centroid. -->
+        <xacro:foot k="0" x="${-0.3 * bl}" y="${oy_bar}"/>
+        <xacro:foot k="1" x="${0.3 * bl}" y="${oy_bar}"/>
+        <xacro:foot k="2" x="0" y="${oy_stem - 0.3 * sl}"/>
+      </xacro:if>
       <xacro:tee_box part="stem" oy="${oy_stem}" lx="${sw}" ly="${sl}"/>
     </link>
+    <xacro:if value="${coulomb}">
+      <plugin filename="PlanarCoulombFriction" name="pusht_gz::PlanarCoulombFriction">
+        <mu>${mu}</mu>
+        <cell>0.02</cell>
+        <v_eps>0.005</v_eps>
+        <box>0 ${oy_bar} ${bl / 2} ${bw / 2}</box>
+        <box>0 ${oy_stem} ${sw / 2} ${sl / 2}</box>
+      </plugin>
+    </xacro:if>
     <xacro:unless value="$(arg goal)">
       <!-- Exact world-frame ground truth of the centroid (x, y, yaw, body-frame twist). -->
       <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">

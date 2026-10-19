@@ -256,6 +256,22 @@ def test_scan_to_rays_box_and_teammate():
     assert pts.shape == (int(np.isfinite(scan["ranges"]).sum()), 2)
 
 
+@pytest.mark.parametrize("side", [1, -1], ids=["left", "rear"])
+def test_scan_to_rays_keeps_a_touching_t(side):
+    """A face 5 mm from the robot's side (or rear), seen through 1 cm range noise, stays a
+    hit on the rays that point at it: noisy returns just inside the footprint are kept."""
+    pose = (0.0, 0.0, 0.0)
+    if side == 1:  # wall along x, 5 mm left of the side face
+        wall, ray = (0.0, LIMO_HALF[1] + 0.005 + 0.1, 0.0, 0.5, 0.1), 8
+    else:  # wall along y, 5 mm behind the rear face
+        wall, ray = (-LIMO_HALF[0] - 0.005 - 0.1, 0.0, 0.0, 0.1, 0.5), 16
+    gap = (LIMO_HALF[1] if side == 1 else LIMO_HALF[0]) + 0.005
+    for seed in range(5):
+        scan = _scan(pose, [wall], noise=0.01, seed=seed)
+        ranges, _ = _resample(scan, pose, 32, 1.5)
+        assert abs(ranges[ray] - gap) < 0.03, (seed, ranges[ray])
+
+
 def test_scan_points_outside_arena_are_misses():
     """A box beyond the arena square is invisible (swarp's walls are), one inside is not."""
     pose = (1.5, 0.0, 0.0)

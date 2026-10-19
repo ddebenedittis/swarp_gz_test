@@ -215,15 +215,23 @@ def main(argv=None) -> None:
         def pair(k, nd=3):
             return f"{fmt(ms.get(k), nd)} / {fmt(mg.get(k), nd)}"
         fin = lambda m: "({:+.2f}, {:+.2f}, {:+.0f}°)".format(*m["T_final"]) if "T_final" in m else "n/a"  # noqa: E731
+        ref = os.path.join(d, f"reference_{e.name}_mu0.1.npy")
+        if os.path.exists(ref):
+            tr = np.load(ref)
+            path = float(np.hypot(*np.diff(tr[:, :2], axis=0).T).sum())
+            ref_rot = fmt(float(np.degrees(wrap(tr[-1, 2] - tr[0, 2]))) / max(path, 1e-9), 1)
+        else:
+            ref_rot = "n/a"
         rows.append([
-            e.name, pair("onset", 1), pair("T/cmd", 2), pair("T/robot", 2), pair("T_rot_deg_per_m", 1),
+            e.name, pair("onset", 1), pair("T/cmd", 2), pair("T/robot", 2),
+            f"{pair('T_rot_deg_per_m', 1)} / {ref_rot}",
             pair("robot_dheading_deg", 1), pair("robot_lat_slip", 3), pair("T_stop_dist", 3),
             f"{fin(ms)} / {fin(mg)}",
         ])
     md.append("## 2. Pushing (swarp / gz), contact = T speed > 0.02 m/s while commanded\n\n" + table(
-        ["exp", "contact at [s]", "T speed / cmd", "T speed / robot speed", "T rot [deg/m]", "robot Δheading [deg]",
+        ["exp", "contact at [s]", "T speed / cmd", "T speed / robot speed", "T rot [deg/m] (swarp / gz / quasi-static ref)", "robot Δheading [deg]",
          "robot lateral slip [m/s]", "T stop dist [m]", "T final (dx, dy, dyaw)"], rows
-    ) + "\n")
+    ) + "\n\nThe quasi-static reference (`scripts/pushing_reference.py`): uniform-pressure Coulomb floor, ideal velocity-controlled flat pusher, robot-T friction 0.1 (gz's min(0.1, 0.3)), 1.35 m of pusher travel.\n")
 
     rows = []
     for e in [x for x in exps.values() if x.group == "lidar"]:

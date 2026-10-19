@@ -28,14 +28,15 @@ ros2 run pusht_gz set_pose tee 0 0 0
 ## Architecture
 
 ```
-limo_gz_description
-    ↑
-pusht_gz
-    ↑
-pusht_policy
+limo_gz_description   pusht_gz_plugins
+            ↑         ↑
+             pusht_gz
+                ↑
+           pusht_policy
 ```
 
 - `limo_gz_description` (ament_cmake): `urdf/limo.urdf.xacro`, spawned as URDF (sdformat converts it). Frames prefixed `robot_i/`, topics under `/robot_i/`. DiffDrive (4 joints), OdometryPublisher ground truth, JointStatePublisher, `gpu_lidar`.
+- `pusht_gz_plugins` (ament_cmake, C++): `PlanarCoulombFriction` gz-sim system (isotropic Coulomb floor friction of a uniform pressure over a footprint, applied as a wrench); an env hook puts its `lib/` on `GZ_SIM_SYSTEM_PLUGIN_PATH`.
 - `pusht_gz` (ament_python):
   - `launch/sim.launch.py`: renders world + models with xacro, spawns via `ros_gz_sim create`, writes the `parameter_bridge` YAML to a temp file, one `robot_state_publisher` per robot.
   - `models/tee.sdf.xacro`: T (origin at area centroid on the floor, same construction as `swarp.scenarios.shapes.tee`) and, with `goal:=true`, the visual-only goal marker.
@@ -58,6 +59,9 @@ pusht_policy
 - Do not name `<collision>`/`<visual>` in the URDF: sdformat then silently drops the `<gazebo reference>` friction and visibility blocks.
 - Wheel friction is anisotropic (`fdir1` = axle, `mu1` lateral 0.2, `mu2` rolling 1.0). With isotropic mu the 4WD skid steer cannot turn in place (scrub torque about the wheelbase beats drive torque about the track). Commanded ω = 1.0 gives 0.79 rad/s.
 - gz Python bindings hold the GIL in `request()`: a live Python subscription callback in the same process makes every service call time out. `GzWorld` subscribes to the clock only inside `wait_sim`.
+- DART's (and bullet-featherstone's) contact friction is a pyramid with decoupled axes: a T sliding along one axis keeps the full static friction of the other and resists turning, so an off-centre flat push barely rotates it (-0.4 deg/m vs -64 deg/m quasi-static). The T therefore stands on three frictionless spheres and gets its floor friction from `PlanarCoulombFriction` (`tee_floor_friction:=coulomb`, the default; `contact` restores DART's).
+- swarp's T drag is viscous (equal linear/angular decay 40/s, i.e. a uniform viscous floor): it rotates the T ~35% less than Coulomb at a 0.2 m offset push (`scripts/pushing_reference.py --viscous`).
+- `scan_to_rays` drops only points more than 3 cm inside the own footprint (`own_margin=-0.03`), so a T touching the side/rear survives 1 cm range noise. A T against the front bumper is 0.058 m from the lidar, below its 0.10 m min range, and stays invisible.
 - Teleporting keeps velocities; `set_poses_at_rest` teleports, waits sim time, teleports again.
 - OdometryPublisher twist is body-frame; `gt_pose_relay` rotates it to world frame (swarp observes world-frame velocity).
 - `rtf:=0` reaches ~1.6× real time with 2 robots on this machine (physics + 2 lidars), ~1× with the policies and manager running.
