@@ -75,6 +75,7 @@ class ObsConfig:
     agent_radius: float = _DEFAULT_AGENT_RADIUS
     agent_half_extents: tuple[float, float] | None = None  # None: (r, r / 2) for a box
     lidar_body_frame: bool | None = None  # None: whenever the heading matters
+    lidar_min_range: float = 0.0  # from the lidar origin; returns closer than this are misses
 
     def __post_init__(self) -> None:
         if self.obs_level != 1:
@@ -425,6 +426,30 @@ def label_rays(
     return r, cls
 
 
+#: swarp's slack on the field-of-view edge (``pusht_lidar_kernels.FOV_EPS``).
+FOV_EPS = 1e-4
+
+
+def blank_outside_fov(
+    ranges: np.ndarray, hit_class: np.ndarray, fov: float, max_range: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """swarp's field-of-view blanking (``lidar_fov``): ray ``r``, at ``r * 2 pi / R`` off the
+    heading (wrapped to ``(-pi, pi]``), reads as a miss (``max_range``, :data:`HIT_NONE`)
+    when that offset exceeds ``fov / 2 + FOV_EPS``. A deployment parameter: ``fov`` is the
+    robot's measured unobstructed field of view, whatever the checkpoint was trained on;
+    ``fov >= 2 pi`` blanks nothing."""
+    r = np.asarray(ranges, dtype=np.float64).copy()
+    cls = np.asarray(hit_class).copy()
+    if fov >= 2.0 * math.pi:
+        return r, cls
+    off = ray_angles(r.size)
+    rel = np.arctan2(np.sin(off), np.cos(off))
+    blind = np.abs(rel) > 0.5 * fov + FOV_EPS
+    r[blind] = max_range
+    cls[blind] = HIT_NONE
+    return r, cls
+
+
 __all__ = [
     "HIT_AGENT",
     "HIT_MOVABLE",
@@ -434,6 +459,7 @@ __all__ = [
     "ObsBuilder",
     "ObsConfig",
     "label_rays",
+    "blank_outside_fov",
     "ray_angles",
     "scan_points",
     "scan_to_rays",

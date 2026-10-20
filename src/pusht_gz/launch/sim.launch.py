@@ -2,9 +2,16 @@
 
     ros2 launch pusht_gz sim.launch.py n_robots:=2 headless:=true rtf:=0
 
-Per robot ``robot_i`` (i = 1..N): /robot_i/{cmd_vel, odom, scan, gt_odom, joint_states, pose, vel}.
-T: /tee/{gt_odom, pose, vel}. Ground-truth TF world -> robot_i/base_footprint and world -> tee.
-Teleport anything with the /world/pusht/set_pose service (ROS, bridged) or pusht_gz.gz_reset.
+Per robot ``robot_i`` (i = 1..N): /robot_i/{cmd_vel, odom, scan, gt_odom, gt_pose, gt_vel,
+joint_states}, and /robot_i/{pose, vel} with pose_source:=gt. T: /tee/{gt_odom, pose, vel}.
+TF: with pose_source:=gt, ground truth world -> robot_i/base_footprint and world -> tee;
+otherwise the wheel odometry robot_i/odom -> robot_i/base_footprint, for a localizer
+(AMCL) to add map -> robot_i/odom. Teleport anything with the /world/pusht/set_pose service
+(ROS, bridged) or pusht_gz.gz_reset.
+
+With safety_bridge:=true (default) the policy's /robot_i/cmd_vel goes through limo_bridge's
+robot_bridge, as on the real robots (clamp, 0.3 s watchdog, /estop, arena stop), to the
+DiffDrive's /robot_i/limo/cmd_vel.
 """
 
 from __future__ import annotations
@@ -21,7 +28,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from pusht_gz import models
+from pusht_gz import landmarks, models
 
 WORLD = "pusht"
 
@@ -39,7 +46,19 @@ ARGS = {
     "wheel_mu": ("1.0", "wheel friction along the rolling direction"),
     "wheel_mu_lateral": ("0.2", "wheel friction along the axle (skid steer needs it low to turn)"),
     "body_mu": ("0.1", "robot body friction (robot-T contact)"),
-    "lidar_noise_stddev": ("0.01", "lidar Gaussian range noise [m]"),
+    "lidar_noise_stddev": ("0.015", "lidar Gaussian range noise [m] (T-mini Pro ~0.015)"),
+    "lidar_samples": ("400", "lidar samples per full turn (T-mini Pro at 10 Hz ~400)"),
+    "lidar_min_range": ("0.02", "lidar minimum range [m]"),
+    "lidar_max_range": ("12.0", "lidar maximum range [m]"),
+    "lidar_fov": ("6.283185307179586", "lidar field of view [rad], centred on the heading"),
+    "landmarks": ("false", "walls and boxes outside the arena (pusht_gz.landmarks), for AMCL"),
+    "pose_source": ("gt", "gt: ground truth on /robot_i/pose, /tee/pose and TF; amcl: /tee/pose only; "
+                          "mocap: none (limo_real's relays publish them); both: odometry TF"),
+    "safety_bridge": ("true", "route /robot_i/cmd_vel through limo_bridge robot_bridge; external: the "
+                              "DiffDrive listens on /robot_i/limo/cmd_vel but no bridge is started here"),
+    "cmd_timeout": ("0.3", "robot_bridge watchdog [s]"),
+    "odom_yaw_scale": ("0.79", "robot_bridge: true / wheel-odometry turn ratio (measured in Gazebo: 0.79)"),
+    "arena_stop": ("2.0", "robot_bridge arena half side [m] (0: no arena stop)"),
     "tee_bar_len": ("1.0", "T crossbar length [m]"),
     "tee_bar_width": ("0.3", "T crossbar width [m]"),
     "tee_stem_len": ("0.7", "T stem length [m]"),
@@ -58,6 +77,10 @@ ARGS = {
     "rviz": ("false", "start RViz"),
     "record_video": ("false", "add the 1280x720 30 Hz video camera (gz topic /video/image)"),
 }
+
+
+def _true(s: str) -> bool:
+    return s.lower() in ("1", "true", "yes")
 
 
 def _robot_poses(spec: str, n: int) -> list[tuple[float, float, float]]:
@@ -84,20 +107,29 @@ def _bridge_entry(ros: str, ros_type: str, gz_type: str, direction: str, gz: str
     }
 
 
-def _bridge_config(robots: list[str], contacts: bool = False) -> list[dict]:
+def _bridge_config(robots: list[str], contacts: bool = False, gt_tf: bool = True,
+                   safety_bridge: bool = True) -> list[dict]:
     odom = ("nav_msgs/msg/Odometry", "gz.msgs.Odometry", "GZ_TO_ROS")
     tf = ("tf2_msgs/msg/TFMessage", "gz.msgs.Pose_V", "GZ_TO_ROS")
     cfg = [_bridge_entry("/clock", "rosgraph_msgs/msg/Clock", "gz.msgs.Clock", "GZ_TO_ROS")]
     for r in robots:
+        cmd = f"/{r}/limo/cmd_vel"
         cfg += [
-            _bridge_entry(f"/{r}/cmd_vel", "geometry_msgs/msg/Twist", "gz.msgs.Twist", "ROS_TO_GZ"),
-            _bridge_entry(f"/{r}/odom", *odom),
+            _bridge_entry(cmd if safety_bridge else f"/{r}/cmd_vel", "geometry_msgs/msg/Twist", "gz.msgs.Twist",
+                          "ROS_TO_GZ", gz=cmd),
+            # Wheel odometry: through robot_bridge (turns scaled by odom_yaw_scale), as on the robot.
+            _bridge_entry(f"/{r}/limo/odom" if safety_bridge else f"/{r}/odom", *odom, gz=f"/{r}/limo/odom"),
             _bridge_entry(f"/{r}/gt_odom", *odom),
-            _bridge_entry("/tf", *tf, gz=f"/{r}/gt_tf"),
             _bridge_entry(f"/{r}/scan", "sensor_msgs/msg/LaserScan", "gz.msgs.LaserScan", "GZ_TO_ROS"),
             _bridge_entry(f"/{r}/joint_states", "sensor_msgs/msg/JointState", "gz.msgs.Model", "GZ_TO_ROS"),
         ]
-    cfg += [_bridge_entry("/tee/gt_odom", *odom), _bridge_entry("/tf", *tf, gz="/tee/gt_tf")]
+        if gt_tf:
+            cfg.append(_bridge_entry("/tf", *tf, gz=f"/{r}/gt_tf"))
+        elif not safety_bridge:
+            cfg.append(_bridge_entry("/tf", *tf, gz=f"/{r}/odom_tf"))
+    cfg.append(_bridge_entry("/tee/gt_odom", *odom))
+    if gt_tf:
+        cfg.append(_bridge_entry("/tf", *tf, gz="/tee/gt_tf"))
     if contacts:
         cfg.append(_bridge_entry(
             "/tee/contacts", "ros_gz_interfaces/msg/Contacts", "gz.msgs.Contacts", "GZ_TO_ROS",
@@ -154,7 +186,8 @@ def _setup(context):
             wheel_mu=a["wheel_mu"],
             wheel_mu_lateral=a["wheel_mu_lateral"],
             body_mu=a["body_mu"],
-            lidar_noise_stddev=a["lidar_noise_stddev"],
+            **{k: a[k] for k in ("lidar_noise_stddev", "lidar_samples", "lidar_min_range",
+                                 "lidar_max_range", "lidar_fov")},
         )
         actions += [
             _spawn(robot, urdf, x, y, yaw, z=0.002),
@@ -174,9 +207,15 @@ def _setup(context):
     actions.append(_spawn("goal", models.tee("goal", goal=True, **goal_args),
                           float(a["goal_x"]), float(a["goal_y"]), float(a["goal_yaw"])))
 
+    if _true(a["landmarks"]):
+        actions.append(_spawn("landmarks", landmarks.sdf(), 0.0, 0.0, 0.0))
+
+    gt = a["pose_source"] == "gt"
+    external = a["safety_bridge"] == "external"
+    safety = external or _true(a["safety_bridge"])
     with tempfile.NamedTemporaryFile("w", prefix="pusht_bridge_", suffix=".yaml", delete=False) as f:
-        contacts = a["tee_contact_sensor"].lower() in ("1", "true", "yes")
-        yaml.safe_dump(_bridge_config(robots, contacts), f, sort_keys=False)
+        contacts = _true(a["tee_contact_sensor"])
+        yaml.safe_dump(_bridge_config(robots, contacts, gt_tf=gt, safety_bridge=safety), f, sort_keys=False)
     actions += [
         Node(
             package="ros_gz_bridge",
@@ -188,10 +227,35 @@ def _setup(context):
         Node(
             package="pusht_gz",
             executable="gt_pose_relay",
-            parameters=[{"bodies": robots + ["tee"], "use_sim_time": True}],
+            parameters=[{"bodies": robots + ["tee"], # [""]: none (a launch parameter cannot be an empty list)
+                         "pose_bodies": {"gt": robots + ["tee"], "mocap": [""]}.get(a["pose_source"], ["tee"]),
+                         "use_sim_time": True}],
             output="screen",
         ),
     ]
+    if safety and not external:
+        actions += [
+            Node(
+                package="limo_bridge",
+                executable="robot_bridge",
+                name="robot_bridge",
+                namespace=r,
+                parameters=[{
+                    "robot_name": r,
+                    "driver_cmd_vel": f"/{r}/limo/cmd_vel",
+                    "relay_scan": False,
+                    "driver_odom": f"/{r}/limo/odom",
+                    "odom_yaw_scale": float(a["odom_yaw_scale"]),
+                    "publish_tf": not gt,
+                    "publish_laser_tf": False,
+                    "cmd_timeout": float(a["cmd_timeout"]),
+                    "arena_half": float(a["arena_stop"]),
+                    "use_sim_time": True,
+                }],
+                output="screen",
+            )
+            for r in robots
+        ]
 
     if a["rviz"].lower() in ("1", "true", "yes"):
         actions.append(Node(package="rviz2", executable="rviz2", parameters=[{"use_sim_time": True}]))

@@ -1,0 +1,27 @@
+// zenoh-bridge-ros2dds on one Limo, the fallback when DDS between the robot's ROS 2 (Foxy /
+// Humble) and the laptop's Jazzy does not work (docs/real_robot.md, "Networking").
+// Replace robot_1 with this robot's name and LAPTOP_IP with the laptop's address; run with
+// ROS_LOCALHOST_ONLY=1 for every onboard ROS process, so DDS stays on the robot and only
+// zenoh crosses the network:
+//   zenoh-bridge-ros2dds -c zenoh-robot.json5
+// Untested on the robots (see docs/real_robot.md).
+{
+  mode: "client",
+  connect: { endpoints: ["tcp/LAPTOP_IP:7447"] },
+  plugins: {
+    ros2dds: {
+      nodename: "zenoh_bridge_robot_1",
+      // what leaves the robot
+      allow: {
+        publishers: ["/robot_1/scan", "/robot_1/odom", "/robot_1/bridge_state", "/robot_1/cmd_vel_gated",
+                     "/robot_1/amcl_pose", "/tf", "/tf_static"],
+        // what the robot takes from the laptop
+        subscribers: ["/robot_1/cmd_vel", "/robot_1/pose", "/robot_1/initialpose", "/estop"],
+        service_servers: [],
+        service_clients: [],
+        action_servers: [],
+        action_clients: [],
+      },
+    },
+  },
+}

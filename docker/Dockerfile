@@ -47,6 +47,15 @@ RUN --mount=type=cache,sharing=locked,target=/var/cache/apt \
     --mount=type=cache,sharing=locked,target=/var/lib/apt \
     apt-get update && apt-get install -y --no-install-recommends ffmpeg
 
+# AMCL localization (pose_source:=amcl) and the map server; limo_real's laptop side.
+RUN --mount=type=cache,sharing=locked,target=/var/cache/apt \
+    --mount=type=cache,sharing=locked,target=/var/lib/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ros-jazzy-nav2-amcl \
+    ros-jazzy-nav2-lifecycle-manager \
+    ros-jazzy-nav2-map-server \
+    ros-jazzy-tf2-ros
+
 # Non-root user matching the host UID/GID. Ubuntu 24.04 images ship an `ubuntu` user with
 # UID/GID 1000: drop whatever already owns the requested IDs.
 ARG USERNAME=ros

@@ -1,0 +1,20 @@
+# mocap_relay: Qualisys rigid bodies (mocap4ros2 /rigid_bodies) -> /<name>/pose, /<name>/vel.
+# Fill in after the calibration steps of docs/real_robot.md:
+#   mocap_to_arena: the mocap origin's x, y [m] and yaw [rad] in the arena frame;
+#   yaw_offsets:    per body, the robot's (or T's) heading in the rigid body's frame [rad];
+#   offsets_xy:     per body, the robot centre (or T area centroid) in the rigid body's frame [m].
+# The T's origin must be its area centroid with x along the bar's normal towards the stem
+# side as in swarp (pusht_gz/models/tee.sdf.xacro); goal_marker is an optional fourth body
+# the operator console can take the goal from.
+/**:
+  ros__parameters:
+    topic: /rigid_bodies
+    bodies: [limo_1, limo_2, tee, goal_marker]
+    names: [robot_1, robot_2, tee, goal_marker]
+    yaw_offsets: [0.0, 0.0, 0.0, 0.0]
+    offsets_xy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    mocap_to_arena: [0.0, 0.0, 0.0]
+    frame_id: arena
+    vel_tau: 0.05
+    max_gap: 0.2
+    use_header_stamp: true

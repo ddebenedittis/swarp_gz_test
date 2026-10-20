@@ -1,0 +1,49 @@
+# nav2_amcl for one Limo, namespaced by limo_bridge's amcl.launch.py, which also sets the
+# frames (map, <robot>/odom, <robot>/base_footprint), the scan topic, robot_model_type
+# (it differs between Foxy and Humble+) and the initial pose.
+#
+# Tuned for Push-T rather than navigation: updates every 2 cm / 0.03 rad (the robots move
+# slowly and the policy reads the pose at 10 Hz); a 0.3 m minimum range ignores the robot's
+# own chassis and the T or teammate right next to it (clutter that is not on the map); a
+# large rotation noise because the skid-steer odometry overestimates turns (commanded
+# w = 1.0 turns at ~0.79 rad/s in Gazebo; robot_bridge's odom_yaw_scale removes most of it);
+# large translation noise and random-particle recovery, because a robot shoved by the T or
+# its teammate moves without its wheels turning, and without fresh particles the filter
+# never catches up (the pose error then stayed at 0.3-0.5 m for tens of seconds). Tuned on
+# Gazebo pushing episodes against a few variants (sharper laser model, beam model, beam
+# skipping, more particles): these were the best or equal.
+/**:
+  ros__parameters:
+    alpha1: 0.4
+    alpha2: 0.2
+    alpha3: 0.5
+    alpha4: 0.5
+    alpha5: 0.1
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+    do_beamskip: false
+    global_frame_id: map
+    lambda_short: 0.1
+    laser_likelihood_max_dist: 2.0
+    laser_max_range: 12.0
+    laser_min_range: 0.3
+    laser_model_type: likelihood_field
+    max_beams: 90
+    max_particles: 2000
+    min_particles: 500
+    pf_err: 0.05
+    pf_z: 0.99
+    recovery_alpha_fast: 0.1
+    recovery_alpha_slow: 0.001
+    resample_interval: 1
+    save_pose_rate: 0.5
+    sigma_hit: 0.2
+    tf_broadcast: true
+    transform_tolerance: 0.2
+    update_min_a: 0.03
+    update_min_d: 0.02
+    z_hit: 0.5
+    z_max: 0.05
+    z_rand: 0.5
+    z_short: 0.05

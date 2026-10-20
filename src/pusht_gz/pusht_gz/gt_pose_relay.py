@@ -3,11 +3,13 @@
 For every body ``b`` in the ``bodies`` parameter, ``/b/gt_odom`` (nav_msgs/Odometry from
 gz-sim's OdometryPublisher: world-frame pose, body-frame twist) becomes
 
-* ``/b/pose`` (geometry_msgs/PoseStamped, frame ``world``), and
-* ``/b/vel`` (geometry_msgs/TwistStamped, world-frame linear velocity, yaw rate).
+* ``/b/gt_pose`` (geometry_msgs/PoseStamped, frame ``world``), and
+* ``/b/gt_vel`` (geometry_msgs/TwistStamped, world-frame linear velocity, yaw rate),
 
-On the real robots a mocap relay publishes the same topics, so the policy cannot tell the two
-apart.
+and, for the bodies in ``pose_bodies`` (default: all), the same on ``/b/pose`` and ``/b/vel``,
+the topics the policy reads. On the real robots a mocap or AMCL relay (limo_real) publishes
+those, so the policy cannot tell the sources apart; with a non-ground-truth pose source in
+Gazebo the robots are left out of ``pose_bodies`` and ``gt_*`` stays the reference.
 """
 
 from __future__ import annotations
@@ -28,27 +30,27 @@ class GtPoseRelay(Node):
     def __init__(self):
         super().__init__("gt_pose_relay")
         bodies = self.declare_parameter("bodies", ["robot_1", "robot_2", "tee"]).value
+        pose_bodies = self.declare_parameter("pose_bodies", list(bodies)).value
         self.frame_id = self.declare_parameter("frame_id", "world").value
         self._subs = []
         for body in bodies:
-            pose_pub = self.create_publisher(PoseStamped, f"/{body}/pose", 10)
-            vel_pub = self.create_publisher(TwistStamped, f"/{body}/vel", 10)
+            pubs = [(self.create_publisher(PoseStamped, f"/{body}/gt_pose", 10),
+                     self.create_publisher(TwistStamped, f"/{body}/gt_vel", 10))]
+            if body in pose_bodies:
+                pubs.append((self.create_publisher(PoseStamped, f"/{body}/pose", 10),
+                             self.create_publisher(TwistStamped, f"/{body}/vel", 10)))
             self._subs.append(
                 self.create_subscription(
-                    Odometry,
-                    f"/{body}/gt_odom",
-                    lambda msg, p=pose_pub, v=vel_pub: self._relay(msg, p, v),
-                    10,
+                    Odometry, f"/{body}/gt_odom", lambda msg, pubs=pubs: self._relay(msg, pubs), 10
                 )
             )
-        self.get_logger().info(f"relaying ground truth of {list(bodies)}")
+        self.get_logger().info(f"relaying ground truth of {list(bodies)}, as the pose of {list(pose_bodies)}")
 
-    def _relay(self, odom: Odometry, pose_pub, vel_pub) -> None:
+    def _relay(self, odom: Odometry, pubs) -> None:
         pose = PoseStamped()
         pose.header.stamp = odom.header.stamp
         pose.header.frame_id = self.frame_id
         pose.pose = odom.pose.pose
-        pose_pub.publish(pose)
 
         # Body-frame twist -> world frame.
         yaw = yaw_of(odom.pose.pose.orientation)
@@ -59,7 +61,9 @@ class GtPoseRelay(Node):
         vel.twist.linear.x = c * vb.x - s * vb.y
         vel.twist.linear.y = s * vb.x + c * vb.y
         vel.twist.angular.z = odom.twist.twist.angular.z
-        vel_pub.publish(vel)
+        for pose_pub, vel_pub in pubs:
+            pose_pub.publish(pose)
+            vel_pub.publish(vel)
 
 
 def main(args=None) -> None:

@@ -40,7 +40,13 @@ Do not set `LIBGL_ALWAYS_SOFTWARE=1` with `/dev/dri` mounted: ogre2 then segfaul
 | `robot_poses` | circle r=1.4 | `'x,y,yaw;x,y,yaw'` |
 | `max_linear_acceleration`, `max_angular_acceleration` | 1.0, 3.0 | diff-drive limits [m/s², rad/s²] |
 | `wheel_mu`, `wheel_mu_lateral` | 1.0, 0.2 | wheel friction along / across the rolling direction |
-| `lidar_noise_stddev` | 0.01 | lidar range noise [m] |
+| `lidar_noise_stddev` | 0.015 | lidar range noise [m] |
+| `lidar_samples`, `lidar_min_range`, `lidar_max_range` | 400, 0.02, 12.0 | T-mini Pro: samples per turn, range [m] |
+| `lidar_fov` | 2π | lidar field of view centred on the heading [rad] (the rest is cropped) |
+| `landmarks` | false | walls and boxes outside the arena (`pusht_gz/landmarks.py`), for AMCL |
+| `pose_source` | gt | `gt`: ground truth on `/robot_i/pose`, `/tee/pose` and TF; `amcl`: `/tee/pose` only; `mocap`: none (limo_real's relays publish them); not `gt`: odometry TF |
+| `safety_bridge` | true | commands through limo_bridge's `robot_bridge` (clamp, 0.3 s watchdog, `/estop`, arena stop) to the DiffDrive's `/robot_i/limo/cmd_vel`; `external`: no bridge started here |
+| `cmd_timeout`, `arena_stop` | 0.3, 2.0 | `robot_bridge` watchdog [s] and arena half side [m] (0: off) |
 | `tee_bar_len`, `tee_bar_width`, `tee_stem_len`, `tee_stem_width`, `tee_height` | 1.0, 0.3, 0.7, 0.3, 0.25 | T geometry [m] |
 | `tee_mass`, `tee_mu` | 0.5, 0.3 | T mass [kg] and friction |
 | `tee_floor_friction` | coulomb | `coulomb`: isotropic Coulomb floor friction from `pusht_gz_plugins` (the T on frictionless supports); `contact`: DART's contact friction, which barely turns the T under off-centre pushes |
@@ -54,14 +60,18 @@ Do not set `LIBGL_ALWAYS_SOFTWARE=1` with `/dev/dri` mounted: ogre2 then segfaul
 
 | Topic | Type | Notes |
 |---|---|---|
-| `/robot_i/cmd_vel` | `geometry_msgs/Twist` | diff drive (4WD skid steer), acceleration-limited |
-| `/robot_i/scan` | `sensor_msgs/LaserScan` | 360 rays, -π..π step 1°, 0.10–8 m, 10 Hz, frame `robot_i/laser_link` |
+| `/robot_i/cmd_vel` | `geometry_msgs/Twist` | the policy's command, into `robot_bridge` |
+| `/robot_i/limo/cmd_vel` | `geometry_msgs/Twist` | diff drive (4WD skid steer), acceleration-limited (`robot_bridge`'s output) |
+| `/robot_i/cmd_vel_gated`, `/robot_i/bridge_state` | `Twist`, `String` | what `robot_bridge` sends, and why (`ok`, `stale`, `estop`, `arena`, `no_pose`) |
+| `/estop` | `std_msgs/Bool` | latched; true zeroes every robot |
+| `/robot_i/scan` | `sensor_msgs/LaserScan` | 400 rays, -π..π, 0.02–12 m, 10 Hz, frame `robot_i/laser_link` |
 | `/robot_i/odom` | `nav_msgs/Odometry` | wheel odometry, `robot_i/odom` → `robot_i/base_footprint` |
 | `/robot_i/gt_odom`, `/tee/gt_odom` | `nav_msgs/Odometry` | exact ground truth, world frame, body-frame twist, 50 Hz |
-| `/robot_i/pose`, `/tee/pose` | `geometry_msgs/PoseStamped` | ground truth, frame `world` (mocap on the real robots) |
+| `/robot_i/pose`, `/tee/pose` | `geometry_msgs/PoseStamped` | what the policy sees: ground truth (frame `world`), or AMCL / mocap through limo_real's relays (`pose_source`) |
 | `/robot_i/vel`, `/tee/vel` | `geometry_msgs/TwistStamped` | world-frame linear velocity, yaw rate |
+| `/robot_i/gt_pose`, `/robot_i/gt_vel`, `/tee/gt_pose` | as above | always ground truth (scoring, `pose_error`) |
 | `/robot_i/joint_states` | `sensor_msgs/JointState` | wheel joints |
-| `/tf` | | `world` → `robot_i/base_footprint`, `world` → `tee` (ground truth) |
+| `/tf` | | `pose_source:=gt`: `world` → `robot_i/base_footprint`, `world` → `tee` (ground truth); otherwise `robot_i/odom` → `robot_i/base_footprint` (and AMCL's `map` → `robot_i/odom`) |
 | `/clock` | `rosgraph_msgs/Clock` | sim time |
 | `/world/pusht/set_pose` | `ros_gz_interfaces/srv/SetEntityPose` | teleport a model (service) |
 
@@ -80,7 +90,12 @@ src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/<run>/<ckpt>.pt <shard
 The manager draws initial states like swarp's reset at full difficulty (seeded), teleports the bodies, publishes `/goal` (PoseStamped) and `/episode` (Int32 id, `-1` = stopped), and scores success exactly as swarp (`|p - g| < goal_tolerance` and `|Δθ| < angle_tolerance`, checked every `dt`, timeout `max_steps·dt`).
 Each episode is a row of `out/<run name>/episodes.csv`; with `record:=true`, `rec/ep<id>_robot_<i>.npz` holds every step's obs, action, raw scan, poses and T pose.
 
+`pose_source:=amcl` adds the landmarks, one nav2 AMCL per robot on the map `pusht_gz/maps/landmarks.yaml` (rasterized from the same geometry, `ros2 run pusht_gz make_map <dir>`), re-initialised at the true pose after every teleport; `pose_source:=mocap` turns ground truth into `/rigid_bodies` (`fake_mocap`) for the real `mocap_relay`.
+Either way `<run>/pose_error/summary.json` (`ros2 run limo_real pose_error_merge <dirs>` merges shards) holds the pose error against ground truth.
+`lidar_fov:=<rad>` crops the gz lidar and blanks the policy's rays outside it as swarp's `lidar_fov` does.
+
 Results for the Limo-scale checkpoints, with failure modes and how to reproduce them: [docs/results.md](docs/results.md).
+Running on the real Limos (onboard safety bridge, pose sources, operator console, measurements, networking): [docs/real_robot.md](docs/real_robot.md).
 Per-run failure classes, stalls and squeeze locks: `PYTHONPATH=src/pusht_policy python3 -m pusht_policy.failure_modes out/<run>`.
 
 ## Record a video

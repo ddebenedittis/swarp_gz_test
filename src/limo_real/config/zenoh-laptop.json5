@@ -1,0 +1,21 @@
+// zenoh-bridge-ros2dds on the laptop (router): every robot's zenoh-robot.json5 connects here.
+//   zenoh-bridge-ros2dds -c zenoh-laptop.json5
+// Untested on the robots (see docs/real_robot.md).
+{
+  mode: "router",
+  listen: { endpoints: ["tcp/0.0.0.0:7447"] },
+  plugins: {
+    ros2dds: {
+      nodename: "zenoh_bridge_laptop",
+      allow: {
+        publishers: ["/robot_\\d+/cmd_vel", "/robot_\\d+/pose", "/robot_\\d+/initialpose", "/estop"],
+        subscribers: ["/robot_\\d+/scan", "/robot_\\d+/odom", "/robot_\\d+/bridge_state",
+                      "/robot_\\d+/cmd_vel_gated", "/robot_\\d+/amcl_pose", "/tf", "/tf_static"],
+        service_servers: [],
+        service_clients: [],
+        action_servers: [],
+        action_clients: [],
+      },
+    },
+  },
+}

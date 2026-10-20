@@ -3,7 +3,7 @@
   AgileX Limo (4WD skid steer) for Gazebo Harmonic.
 
   Every link, joint and frame is prefixed with "<robot_name>/", every topic lives under
-  "/<robot_name>/". Dimensions follow the AgileX spec: 0.322 x 0.220 x 0.251 m, 4.2 kg,
+  "/<robot_name>/". Dimensions follow the AgileX spec: 0.322 x 0.220 x 0.251 m, 4.8 kg,
   wheel radius 0.045 m, wheelbase 0.2 m, track 0.172 m.
 
   Frames (HO-MPC convention): base_footprint on the floor below the body centre, base_link
@@ -30,7 +30,13 @@
   <xacro:arg name="wheel_mu" default="1.0"/>
   <xacro:arg name="wheel_mu_lateral" default="0.2"/>
   <xacro:arg name="body_mu" default="0.1"/>
-  <xacro:arg name="lidar_noise_stddev" default="0.01"/>
+  <xacro:arg name="lidar_noise_stddev" default="0.015"/>
+  <xacro:arg name="lidar_samples" default="400"/>
+  <xacro:arg name="lidar_min_range" default="0.02"/>
+  <xacro:arg name="lidar_max_range" default="12.0"/>
+  <xacro:arg name="lidar_rate" default="10"/>
+  <xacro:arg name="lidar_fov" default="6.283185307179586"/>
+  <xacro:arg name="cmd_vel_topic" default=""/>
 
   <xacro:property name="name" value="$(arg robot_name)"/>
   <xacro:property name="p" value="$(arg robot_name)/"/>
@@ -46,14 +52,26 @@
   <xacro:property name="body_z" value="0.230"/>
   <xacro:property name="body_bottom" value="0.020"/>
   <xacro:property name="base_link_z" value="0.15"/>
-  <xacro:property name="body_mass" value="3.4"/>
+  <xacro:property name="body_mass" value="4.0"/>
 
-  <!-- Wheels: 4 x 0.2 kg, so the robot weighs 4.2 kg -->
+  <!-- Wheels: 4 x 0.2 kg, so the robot weighs 4.8 kg -->
   <xacro:property name="wheel_radius" value="0.045"/>
   <xacro:property name="wheel_width" value="0.045"/>
   <xacro:property name="wheel_mass" value="0.2"/>
   <xacro:property name="wheelbase" value="0.2"/>
   <xacro:property name="track" value="0.172"/>
+
+  <!-- Lidar: EAI T-mini Pro, lidar_samples per full turn. A field of view below 2 pi (the
+       chassis blocking the rear) keeps the rays within fov / 2 of the heading. -->
+  <xacro:property name="lidar_n" value="${int($(arg lidar_samples))}"/>
+  <xacro:property name="lidar_fov" value="${float($(arg lidar_fov))}"/>
+  <xacro:property name="lidar_full" value="${lidar_fov >= 2 * pi - 1e-6}"/>
+  <xacro:property name="lidar_rays" value="${lidar_n if lidar_full else int(round(lidar_n * lidar_fov / (2 * pi))) + 1}"/>
+  <xacro:property name="lidar_min_angle" value="${-pi if lidar_full else -lidar_fov / 2}"/>
+  <xacro:property name="lidar_max_angle" value="${pi - 2 * pi / lidar_n if lidar_full else lidar_fov / 2}"/>
+  <!-- DiffDrive's command topic: the safety bridge's output (limo_bridge robot_bridge), as
+       on the real robot, where limo_base's /cmd_vel is remapped to /<robot>/limo/cmd_vel. -->
+  <xacro:property name="cmd_topic" value="${'$(arg cmd_vel_topic)' or '/' + name + '/limo/cmd_vel'}"/>
 
   <!-- Lidar mount, from base_link -->
   <xacro:property name="lidar_x" value="0.103"/>
@@ -202,17 +220,17 @@
     <sensor name="lidar" type="gpu_lidar">
       <topic>/${name}/scan</topic>
       <gz_frame_id>${p}laser_link</gz_frame_id>
-      <update_rate>10</update_rate>
+      <update_rate>$(arg lidar_rate)</update_rate>
       <always_on>true</always_on>
       <visualize>false</visualize>
       <lidar>
         <scan>
           <horizontal>
-            <!-- 1 deg steps over the full circle, no duplicate ray at +-pi -->
-            <samples>360</samples>
+            <!-- 2 pi / lidar_samples steps; over the full circle no duplicate ray at +-pi -->
+            <samples>${lidar_rays}</samples>
             <resolution>1</resolution>
-            <min_angle>${-pi}</min_angle>
-            <max_angle>${pi - 2 * pi / 360}</max_angle>
+            <min_angle>${lidar_min_angle}</min_angle>
+            <max_angle>${lidar_max_angle}</max_angle>
           </horizontal>
           <vertical>
             <samples>1</samples>
@@ -222,8 +240,8 @@
           </vertical>
         </scan>
         <range>
-          <min>0.10</min>
-          <max>8.0</max>
+          <min>$(arg lidar_min_range)</min>
+          <max>$(arg lidar_max_range)</max>
           <resolution>0.01</resolution>
         </range>
         <noise>
@@ -262,8 +280,8 @@
       <min_linear_acceleration>${-max_lin_acc}</min_linear_acceleration>
       <max_angular_acceleration>${max_ang_acc}</max_angular_acceleration>
       <min_angular_acceleration>${-max_ang_acc}</min_angular_acceleration>
-      <topic>/${name}/cmd_vel</topic>
-      <odom_topic>/${name}/odom</odom_topic>
+      <topic>${cmd_topic}</topic>
+      <odom_topic>/${name}/limo/odom</odom_topic>
       <odom_publish_frequency>$(arg odom_publish_frequency)</odom_publish_frequency>
       <tf_topic>/${name}/odom_tf</tf_topic>
       <frame_id>${p}odom</frame_id>

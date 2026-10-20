@@ -117,3 +117,20 @@ cd ../swarp && uv run --no-sync python ../swarp_gz_test/src/pusht_policy/scripts
 
 The runs behind the table are in `out/{L2,L3b-ext,L4-ext,L5r,L5s,L5}_{greedy,sampled}_6caede2/` (gitignored); the pre-friction L2 run is `out/L2-H1-limo-s0_greedy_prefix/`.
 Each holds `episodes.csv` and `rec/` per shard, the shard logs, and the command line in `cmd`.
+
+## Pose source: ground truth vs AMCL
+
+On the measured Limo specs (4.8 kg, T-mini Pro: 400 samples per turn, 0.02–12 m, σ 0.015 m), with the onboard safety bridge in the loop and the landmarks outside the arena, L5s greedy on seeds 0–1 (20 episodes, the same initial states in both rows):
+
+| pose source | Gazebo | median solve time |
+|---|---|---|
+| ground truth | 19/20 = 0.950 [0.764, 0.991] | 26.0 s |
+| AMCL (nav2, one per robot, `limo_bridge/config/amcl.yaml`) | 15/20 = 0.750 [0.531, 0.888] | 59.0 s |
+
+AMCL's pose error over those episodes: position mean 0.161 m, median 0.081 m, p95 0.469 m; heading mean 0.033 rad, p95 0.136 rad; details and the mechanism in [real_robot.md](real_robot.md#gazebo-stand-ins).
+
+```bash
+src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/remote-davide-cf/L5s-wheelstall-limo-s0-fromL5r/pusht_lidar_limo_dr_wheel_best.pt 2 10 L5s_gt_landmarks 0 landmarks:=true record:=true
+BUILD=0 DOMAIN_BASE=80 src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/remote-davide-cf/L5s-wheelstall-limo-s0-fromL5r/pusht_lidar_limo_dr_wheel_best.pt 2 10 L5s_amcl 0 pose_source:=amcl record:=true
+ros2 run limo_real pose_error_merge out/L5s_amcl/shard0/pose_error out/L5s_amcl/shard1/pose_error
+```

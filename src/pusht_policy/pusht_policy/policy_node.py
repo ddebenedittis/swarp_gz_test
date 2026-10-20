@@ -17,7 +17,11 @@ Each step builds the observation with :mod:`pusht_policy.obs` and publishes
 ``actor.greedy(obs, role)``, or with ``sample`` an action drawn from the policy's
 tanh-Gaussian as in training (``squash(loc + scale * eps)``, ``eps`` from a generator seeded
 with ``sample_seed``). The command is held between steps. A new episode id zeroes the frame
-stack; while stopped the node publishes a zero twist on every scan. With ``record_dir`` set, every episode's per-step
+stack; while stopped the node publishes a zero twist on every scan. Between steps the held
+command is republished on every scan, so the onboard watchdog (limo_bridge's robot_bridge,
+0.3 s) sees a steady 10 Hz stream and stops the robot when the stream ends; a step parked
+waiting for a pose republishes nothing, so a dead pose source stops the robot too. SIGINT
+and SIGTERM publish a zero twist before the node exits. With ``record_dir`` set, every episode's per-step
 observations, actions, scans and poses (plus the T pose, for diagnosis only) go to
 ``record_dir/ep<id>_robot_<i>.npz``.
 """
@@ -30,7 +34,6 @@ import os
 from collections import deque
 
 import numpy as np
-import rclpy
 import torch
 from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
 from rclpy.node import Node
@@ -38,7 +41,16 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profi
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Int32
 
-from pusht_policy.obs import ROLE_OBSERVER, ROLE_PUSHER, ObsBuilder, ObsConfig, label_rays, scan_to_rays
+from limo_bridge import spin
+from pusht_policy.obs import (
+    ROLE_OBSERVER,
+    ROLE_PUSHER,
+    ObsBuilder,
+    ObsConfig,
+    blank_outside_fov,
+    label_rays,
+    scan_to_rays,
+)
 
 #: Latched topics (/goal, /episode): a late subscriber gets the last message.
 LATCHED = QoSProfile(
@@ -94,6 +106,9 @@ class PolicyNode(Node):
         self.index = int(self.declare_parameter("robot_index", 1).value)
         self.mount_x = float(self.declare_parameter("lidar_mount_x", 0.103).value)
         self.max_pose_age = float(self.declare_parameter("max_pose_age", 0.05).value)
+        # The robot's measured unobstructed lidar field of view [rad]; rays outside it are
+        # blanked as swarp's lidar_fov does (2 pi: none).
+        self.lidar_fov = float(self.declare_parameter("lidar_fov", 2.0 * math.pi).value)
         self.record_dir = self.declare_parameter("record_dir", "").value
         self.sample = bool(self.declare_parameter("sample", False).value)
         self.gen = torch.Generator().manual_seed(int(self.declare_parameter("sample_seed", 0).value))
@@ -140,6 +155,7 @@ class PolicyNode(Node):
         self.episode_t0 = math.inf  # scans stamped before the start message are stale
         self.last_step_t = -math.inf
         self.pending: LaserScan | None = None  # a due scan waiting for the poses to catch up
+        self.held = (0.0, 0.0)  # the last step's command, republished between steps
         self.steps = 0
         self.rec: dict[str, list] = {}
         self.get_logger().info(
@@ -181,6 +197,7 @@ class PolicyNode(Node):
             self.rec = {k: [] for k in ("t", "obs", "act", "scan", "pose", "vel", "goal", "tee")}
         else:
             self.episode_t0 = math.inf
+            self.held = (0.0, 0.0)
             self._publish(0.0, 0.0)
 
     # ------------------------------------------------------------------ control step
@@ -197,6 +214,8 @@ class PolicyNode(Node):
             return
         # Step every dt; a scan period's slack absorbs stamp jitter.
         if t - self.last_step_t < self.dt - 0.5 * max(scan.scan_time, 0.01):
+            if self.pending is None:
+                self._publish(*self.held)
             return
         if self.pending is not None:
             self.get_logger().warn(
@@ -219,7 +238,8 @@ class PolicyNode(Node):
         a, cfg = self.agent, self.cfg
         me = (pos[a, 0], pos[a, 1], theta[a])
         rays, _ = scan_to_rays(
-            scan.ranges, scan.angle_min, scan.angle_increment, scan.range_min, scan.range_max,
+            scan.ranges, scan.angle_min, scan.angle_increment,
+            max(scan.range_min, cfg.lidar_min_range), scan.range_max,
             (self.mount_x, 0.0), 0.0, cfg.n_rays, cfg.max_range,
             pose=me, own_half=cfg.half_extents if cfg.agent_shape == "box" else None,
             body_frame=cfg.body_frame,
@@ -231,10 +251,12 @@ class PolicyNode(Node):
             mate_radius=None if box else cfg.agent_radius,
             body_frame=cfg.body_frame,
         )
+        ranges, cls = blank_outside_fov(ranges, cls, self.lidar_fov, cfg.max_range)
         gx, gy, gth = self.goal
         obs = self.builder.build(pos, vel, theta, self.roles, np.array([gx, gy]), gth, ranges, cls)
         act = self._act(torch.from_numpy(obs)[None])
-        self._publish(act[0], act[1])
+        self.held = (float(act[0]), float(act[1]))
+        self._publish(*self.held)
         self.last_step_t = t
         self.steps += 1
         if self.record_dir:
@@ -286,20 +308,19 @@ class PolicyNode(Node):
         self.get_logger().info(f"episode {self.episode}: {self.steps} steps -> {path}")
         self.rec = {}
 
+    def stop(self) -> None:
+        """Zero the robot on the way out (SIGINT/SIGTERM), while the context is alive."""
+        self.held = (0.0, 0.0)
+        self._publish(0.0, 0.0)
+        spin.flush(self.cmd_pub)
+        self.get_logger().info(f"{self.name}: stopped, zero twist sent")
+
     def destroy_node(self):
         self._flush()
         return super().destroy_node()
 
 
 def main(args=None) -> None:
-    rclpy.init(args=args)
+    spin.init(args)
     node = PolicyNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        if rclpy.ok():
-            node._publish(0.0, 0.0)
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin.spin_until_signal(node, node.stop)

@@ -7,6 +7,7 @@
   <maintainer email="davide@cyber-fusion.io">Davide De Benedittis</maintainer>
   <license>MIT</license>
 
+  <exec_depend>limo_bridge</exec_depend>
   <exec_depend>limo_gz_description</exec_depend>
   <exec_depend>pusht_gz_plugins</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>

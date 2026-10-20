@@ -28,27 +28,31 @@ ros2 run pusht_gz set_pose tee 0 0 0
 ## Architecture
 
 ```
-limo_gz_description   pusht_gz_plugins
-            ↑         ↑
-             pusht_gz
-                ↑
-           pusht_policy
+limo_bridge   limo_gz_description   pusht_gz_plugins   mocap_msgs
+   ↑    ↑               ↑         ↑                      ↑
+   │    └──────────  pusht_gz                         limo_real (←limo_bridge)
+   │                    ↑                                ↑
+   └──────────────  pusht_policy ────────────────────────┘
 ```
 
-- `limo_gz_description` (ament_cmake): `urdf/limo.urdf.xacro`, spawned as URDF (sdformat converts it). Frames prefixed `robot_i/`, topics under `/robot_i/`. DiffDrive (4 joints), OdometryPublisher ground truth, JointStatePublisher, `gpu_lidar`.
+- `limo_bridge` (ament_python, runs ONBOARD on Foxy/py3.8 and Humble: rclpy + stdlib only, no `X | Y` at runtime, no `zip(strict=)`, no `rclpy.try_shutdown`): `robot_bridge` (clamp to 0.4/1.5, 0.3 s watchdog publishing zeros at 20 Hz, latched `/estop`, arena stop on `/robot_i/pose`, `dry_run`, scan/odom relays with prefixed frames + TF), `safety.gate` (pure, `test/test_safety.py`), `spin.py` (spin without rclpy's signal handlers so SIGINT/SIGTERM can still publish a zero; used by `policy_node` too), `launch/robot.launch.py` (limo_base + ydlidar remapped under `/robot_i/limo/`), `launch/amcl.launch.py` (namespaced map_server + amcl + lifecycle manager), `config/amcl.yaml`, `config/ydlidar_tmini_pro.yaml`.
+- `limo_real` (ament_python, laptop): `mocap_relay`, `amcl_relay`, `fake_mocap` (gz gt → `/rigid_bodies`), `operator` (interactive console: goal, start/stop, estop, scoring csv), `pose_error` (est vs ref, bias/jitter summary on SIGINT), `measure/*` (cmd timeout, step response, lidar static/rate), `launch/poses.launch.py` (pose_source), `launch/laptop.launch.py`, `config/mocap.yaml`, zenoh configs. Real-robot procedure: `docs/real_robot.md`.
+- `mocap_msgs`: copy of mocap4ros2's interfaces (`RigidBodies`).
+- `limo_gz_description` (ament_cmake): `urdf/limo.urdf.xacro`, spawned as URDF (sdformat converts it). Frames prefixed `robot_i/`, topics under `/robot_i/`. DiffDrive (4 joints) on `/robot_i/limo/cmd_vel`, OdometryPublisher ground truth, JointStatePublisher, `gpu_lidar` (T-mini Pro: 400 samples, 0.02–12 m, σ 0.015, `lidar_fov` crop). 4.8 kg.
 - `pusht_gz_plugins` (ament_cmake, C++): `PlanarCoulombFriction` gz-sim system (isotropic Coulomb floor friction of a uniform pressure over a footprint, applied as a wrench); an env hook puts its `lib/` on `GZ_SIM_SYSTEM_PLUGIN_PATH`.
 - `pusht_gz` (ament_python):
-  - `launch/sim.launch.py`: renders world + models with xacro, spawns via `ros_gz_sim create`, writes the `parameter_bridge` YAML to a temp file, one `robot_state_publisher` per robot.
+  - `launch/sim.launch.py`: renders world + models with xacro, spawns via `ros_gz_sim create`, writes the `parameter_bridge` YAML to a temp file, one `robot_state_publisher` and (`safety_bridge`) one `robot_bridge` per robot; `pose_source` decides who publishes `/robot_i/pose` and whether gt or odometry TF goes on `/tf`.
+  - `pusht_gz/landmarks.py`: walls/boxes outside the arena (SDF) and the map rasterized from them (`maps/landmarks.{pgm,yaml}`, `make_map`).
   - `models/tee.sdf.xacro`: T (origin at area centroid on the floor, same construction as `swarp.scenarios.shapes.tee`) and, with `goal:=true`, the visual-only goal marker.
   - `worlds/pusht.sdf.xacro`: world `pusht`, DART, 1 ms step, no walls.
   - `pusht_gz/models.py`: xacro rendering helpers used by the launch file.
   - `pusht_gz/gz_reset.py`: `GzWorld.set_pose / set_poses / set_poses_at_rest / pause` through `/world/pusht/set_pose[_vector]`.
-  - `pusht_gz/gt_pose_relay.py`: `/b/gt_odom` → `/b/pose` (PoseStamped, `world`) and `/b/vel` (world-frame TwistStamped).
+  - `pusht_gz/gt_pose_relay.py`: `/b/gt_odom` → `/b/gt_pose`, `/b/gt_vel` (always) and `/b/pose`, `/b/vel` (bodies in `pose_bodies`).
 - `pusht_policy` (ament_python), runs swarp checkpoints (`/opt/swarp` must be on the branch the checkpoint was trained on):
   - `obs.py`: pure-numpy rebuild of swarp's `pusht_lidar` obs (`ObsConfig.from_checkpoint`, `ObsBuilder`, `scan_to_rays`, `label_rays`); `test/test_obs_parity.py` checks it bit-for-bit against `PushTLidarScenario`. Do not change its semantics without rerunning `python3 -m pytest src/pusht_policy/test`.
   - `task.py`: `Task.from_checkpoint` (geometry, tolerances, horizon via the real scenario object) and `sample_episode` (swarp's reset kernels in numpy, overlapping spawns redrawn).
   - `policy_node.py`: one per robot; a step per scan whose stamp is `dt` past the last (not a timer), poses at the nearest stamp (a due scan waits for a lagging pose), `actor.greedy` or, with `sample`, the trainer's tanh-Gaussian draw.
-  - `episode_manager.py`: reset, `/goal` + `/episode`, scoring, `episodes.csv`.
+  - `episode_manager.py`: reset, `/goal` + `/episode`, scoring on `gt_pose`, `episodes.csv`; with `initialpose` (AMCL) re-initialises each robot's localizer after the teleport.
   - `video_recorder.py`: with `eval.launch.py record_video:=true`, gz camera frames (gz-transport, not bridged) + overlay -> ffmpeg pipe -> one mp4.
   - `launch/eval.launch.py`, `scripts/eval_shards.bash` (staggered shards, restarts a shard that never started; `DOMAIN_BASE`/`BUILD=0` for concurrent runs), `aggregate.py` (Wilson interval, stdlib only), `failure_modes.py` (failure classes and squeeze locks from `rec/`); swarp-side references: `scripts/swarp_reference.py` (host venv). Results: `docs/results.md`.
   - `sysid/`: shared experiment definitions, `gz_runner.py` (`sysid_gz`), `compare.py`; the swarp side is `scripts/sysid_swarp.py` (host venv), which pins swarp's state by overriding `PushTLidarScenario._launch_spawn`.
@@ -68,3 +72,7 @@ limo_gz_description   pusht_gz_plugins
 - OdometryPublisher twist is body-frame; `gt_pose_relay` rotates it to world frame (swarp observes world-frame velocity).
 - `rtf:=0` reaches ~1.6× real time with 2 robots on this machine (physics + 2 lidars), ~1× with the policies and manager running.
 - `/goal` and `/episode` are transient-local (latched); the policy ignores scans stamped before it received the episode start.
+- `policy_node` republishes its held command on every scan between steps (10 Hz) to feed the 0.3 s watchdog; a step parked waiting for a pose republishes nothing, so a dead pose source stops the robot.
+- The policy drops returns closer than the checkpoint's `lidar_min_range` (0.1 m from the mount) even though the T-mini Pro sees from 0.02 m, and blanks rays outside its `lidar_fov` param (`obs.blank_outside_fov`, swarp's rule).
+- Testing scripts that SIGINT a background job need `set -m`: non-interactive bash starts `&` jobs with SIGINT ignored. `ros2 run` does not forward a SIGINT sent to its own pid; signal the process group.
+- Cross-distro DDS (tested between containers): Humble ↔ Jazzy works; Foxy's Fast DDS aborts (`std::bad_alloc`) on discovering Jazzy, Foxy with `rmw_cyclonedds_cpp` works. Same-host containers need `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` on the Jazzy side. The ros2 daemon is shared over host networking: `ros2 daemon stop` in a container of another distro.

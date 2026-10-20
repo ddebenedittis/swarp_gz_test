@@ -5,13 +5,18 @@ Per episode:
 1. stop the policies (``/episode`` = -1, they publish zero twists) and let the robots stop;
 2. draw the initial state like swarp's reset at full difficulty (:mod:`pusht_policy.task`)
    and teleport robots, T and goal marker with :meth:`GzWorld.set_poses_at_rest`;
-3. wait until every robot's scan and the T's pose postdate the teleport;
+3. wait until every robot's scan and the T's pose postdate the teleport; with
+   ``initialpose`` (a localizer such as AMCL behind ``/robot_i/pose``), publish each
+   robot's true pose on ``/robot_i/initialpose`` and wait until ``/robot_i/pose`` agrees
+   with the truth (``localize_tol``), as an operator re-initializes AMCL after placing
+   the robots;
 4. publish ``/goal`` and ``/episode`` = id, which starts the policies;
-5. every ``dt`` of sim time, score the T pose from ``/tee/pose``: success when
+5. every ``dt`` of sim time, score the T pose from ``/tee/gt_pose``: success when
    ``|p - g| < goal_tolerance`` and ``|wrap(th - g_th)| < angle_tolerance`` (swarp's
    ``done``), timeout after ``max_steps * dt``;
 6. append one row to ``<out_dir>/<run_name>/episodes.csv``.
 
+Every pose this node reads is ground truth (``/<body>/gt_pose``), whatever the policy sees.
 The draws come from one ``numpy`` generator seeded with ``seed``. The process holds no
 gz-transport subscription (the Python bindings would stall the ``set_pose`` replies).
 """
@@ -25,7 +30,7 @@ import time
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
@@ -48,6 +53,9 @@ class EpisodeManager(Node):
         self.stop_time = float(self.declare_parameter("stop_time", 0.5).value)
         self.stall_timeout = float(self.declare_parameter("stall_timeout", 60.0).value)
         world = self.declare_parameter("world", "pusht").value
+        self.initialpose = bool(self.declare_parameter("initialpose", False).value)
+        self.localize_tol = float(self.declare_parameter("localize_tol", 0.03).value)
+        self.localize_timeout = float(self.declare_parameter("localize_timeout", 5.0).value)
         if not ckpt:
             raise ValueError("parameter 'checkpoint' is required")
 
@@ -62,7 +70,15 @@ class EpisodeManager(Node):
         self.pose: dict[str, tuple[float, float, float, float]] = {}  # body -> (t, x, y, yaw)
         self.scan_t: dict[str, float] = {}
         for body in self.robots + ["tee"]:
-            self.create_subscription(PoseStamped, f"/{body}/pose", lambda m, b=body: self._on_pose(b, m), 20)
+            self.create_subscription(PoseStamped, f"/{body}/gt_pose", lambda m, b=body: self._on_pose(b, m), 20)
+        self.est: dict[str, tuple[float, float, float, float]] = {}  # the policy's /robot_i/pose
+        self.init_pubs = {}
+        if self.initialpose:
+            for r in self.robots:
+                self.create_subscription(
+                    PoseStamped, f"/{r}/pose", lambda m, r=r: self._on_pose(r, m, self.est), 20
+                )
+                self.init_pubs[r] = self.create_publisher(PoseWithCovarianceStamped, f"/{r}/initialpose", 10)
         for r in self.robots:
             self.create_subscription(
                 LaserScan, f"/{r}/scan", lambda m, r=r: self.scan_t.__setitem__(r, stamp_s(m.header.stamp)),
@@ -79,9 +95,10 @@ class EpisodeManager(Node):
 
     # ------------------------------------------------------------------ helpers
 
-    def _on_pose(self, body: str, m: PoseStamped) -> None:
+    def _on_pose(self, body: str, m: PoseStamped, into: dict | None = None) -> None:
         p = m.pose
-        self.pose[body] = (stamp_s(m.header.stamp), p.position.x, p.position.y, yaw_of(p.orientation))
+        into = self.pose if into is None else into
+        into[body] = (stamp_s(m.header.stamp), p.position.x, p.position.y, yaw_of(p.orientation))
 
     def now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -136,9 +153,42 @@ class EpisodeManager(Node):
                 for b in self.robots + ["tee"]
             )
             if err < 0.02:
+                if self.initialpose:
+                    self.localize()
                 return
             self.get_logger().warn(f"teleport off by {err:.3f} m (attempt {attempt}), retrying")
         raise RuntimeError("could not teleport the bodies to the episode's initial state")
+
+    def localize(self) -> None:
+        """Re-initialize the localizers at the true poses and wait until they agree."""
+        for r in self.robots:
+            _, x, y, th = self.pose[r]
+            m = PoseWithCovarianceStamped()
+            m.header.stamp = self.get_clock().now().to_msg()
+            m.header.frame_id = "map"
+            m.pose.pose.position.x, m.pose.pose.position.y = x, y
+            m.pose.pose.orientation.z, m.pose.pose.orientation.w = math.sin(th / 2), math.cos(th / 2)
+            cov = [0.0] * 36
+            cov[0] = cov[7] = 0.02**2
+            cov[35] = 0.02**2
+            m.pose.covariance = cov
+            self.init_pubs[r].publish(m)
+
+        def agree() -> bool:
+            for r in self.robots:
+                e, g = self.est.get(r), self.pose[r]
+                if e is None or e[0] < g[0] - 0.1:
+                    return False
+                if math.hypot(e[1] - g[1], e[2] - g[2]) > self.localize_tol or abs(wrap(e[3] - g[3])) > 0.05:
+                    return False
+            return True
+
+        t0 = self.now()
+        while not agree():
+            if self.now() - t0 > self.localize_timeout:
+                self.get_logger().warn("localizers did not converge on the initial poses; starting anyway")
+                return
+            rclpy.spin_once(self, timeout_sec=0.01)
 
     def tee_error(self, goal) -> tuple[float, float]:
         _, x, y, th = self.pose["tee"]

@@ -14,6 +14,7 @@ setup(
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
         ("share/" + package_name + "/worlds", glob("worlds/*.xacro")),
         ("share/" + package_name + "/models", glob("models/*.xacro")),
+        ("share/" + package_name + "/maps", glob("maps/*")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -25,6 +26,7 @@ setup(
         "console_scripts": [
             "gt_pose_relay = pusht_gz.gt_pose_relay:main",
             "set_pose = pusht_gz.gz_reset:main",
+            "make_map = pusht_gz.landmarks:main",
         ],
     },
 )

@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>limo_bridge</name>
+  <version>0.1.0</version>
+  <description>Runs on each Limo (Foxy or Humble): gates the laptop's /robot_i/cmd_vel into the driver's /cmd_vel with clamping, a watchdog, an e-stop and an arena stop, and relays the driver's scan and odometry under /robot_i/.</description>
+  <maintainer email="davide@cyber-fusion.io">Davide De Benedittis</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
