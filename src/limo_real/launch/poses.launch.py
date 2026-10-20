@@ -30,6 +30,7 @@ ARGS = {
     "mocap_params": ("", "mocap_relay params; default limo_real/config/mocap.yaml"),
     "map": ("", "AMCL map yaml (arena frame)"),
     "amcl_params": ("", "AMCL params yaml; default limo_bridge/config/amcl.yaml"),
+    "amcl_scan": ("scan_loc", "AMCL's scan under /robot_i/ (scan_loc: arena contents removed by robot_bridge)"),
     "amcl_onboard": ("false", "AMCL runs on the robots: only relay it here"),
     "map_to_arena": ("0,0,0", "map origin x,y,yaw in the arena frame"),
     "initial_poses": ("", "'x,y,yaw;x,y,yaw' AMCL initial poses (default all zero)"),
@@ -50,7 +51,7 @@ def _amcl(a, robots, sim, out):
         for r, (x, y, yaw) in zip(robots, poses):
             acts.append(IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(launch),
-                launch_arguments={"robot_name": r, "map": a["map"], "params": a["amcl_params"],
+                launch_arguments={"robot_name": r, "map": a["map"], "params": a["amcl_params"], "scan": a["amcl_scan"],
                                   "use_sim_time": str(sim).lower(),
                                   "x": x, "y": y, "yaw": yaw}.items(),
             ))
@@ -81,7 +82,7 @@ def _setup(context):
         acts += _amcl(a, robots, sim, "amcl/pose")
         acts.append(Node(
             package="limo_real", executable="pose_error",
-            parameters=[{"robots": robots, "est": "amcl/pose", "ref": "pose", "out": a["compare_out"],
+            parameters=[{"robots": robots, "est": "amcl/pose", "ref": "pose", "ref_vel": "vel", "out": a["compare_out"],
                          "use_sim_time": sim}],
             output="screen",
         ))

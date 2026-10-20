@@ -19,6 +19,7 @@ Do not skip ahead: every stage checks an assumption the next one relies on.
 ```
 
 - `limo_bridge` (onboard, rclpy and the standard library only, Python 3.8+): `robot.launch.py` starts AgileX's `limo_base` and the T-mini Pro driver with their absolute topics remapped under `/robot_i/limo/`, and `robot_bridge` between them and the network.
+- `robot_bridge` also publishes `/robot_i/scan_loc` for AMCL: the scan with every return inside the square `|x|, |y| ≤ loc_half` (2.35 m, at the robot's latest `/robot_i/pose`) removed, since the arena holds only the T and the robots, which are not on the map.
 - `robot_bridge` clamps the policy's command to the trained `|v| ≤ 0.4 m/s`, `|ω| ≤ 1.5 rad/s`, and publishes zeros to the chassis at 20 Hz whenever no command arrived for 0.3 s, `/estop` is true, or (arena stop on) its `/robot_i/pose` is older than 0.5 s; past the arena edge plus 0.25 m it zeroes outward motion.
 - `dry_run:=true` (shadow mode) never sends anything to the chassis; the gated command still goes to `/robot_i/cmd_vel_gated`.
 - `limo_real` (laptop): the pose sources (`mocap_relay`, `amcl_relay`), `laptop.launch.py` (pose source and policies), the `operator` console (goal, start/stop, e-stop, scoring), `pose_error`, and the measurement scripts.
@@ -106,7 +107,7 @@ Keep the numbers: they go to the recipe author (FOV, pose noise, latency) and in
 4. **Step response** (bridge running normally, ~1.5 m free ahead, mocap on): restart the robot side without `dry_run`, then `ros2 run limo_real measure_step_response --ros-args -p robot:=robot_i`.
    It runs v steps of ±0.1, ±0.2, ±0.4 m/s and ω steps of ±0.5, ±1.0, ±1.5 rad/s and reports per step the gain (measured / commanded), dead time, rise time and acceleration, from mocap and from odometry.
    Compare with the training ranges (`cmd_gain_v` 0.9–1.05, `cmd_gain_w` 0.7–1.0, `servo_accel` 0.6–2.0 m/s², `servo_ang_accel` 2–6 rad/s²); the turn gain is the turn ratio (Gazebo's skid steer gives 0.79).
-   The ratio of the mocap ω gain to the odometry ω gain is the odometry's turn error: pass it as `odom_yaw_scale:=<ratio>` to `robot.launch.py`, which AMCL needs (Gazebo uses 0.79, its measured value).
+   The odometry's heading comes from the chassis IMU (`limo_base` integrates the IMU yaw and the chassis' forward speed along it), so its pose turns correctly even though its twist's ω (wheel-based) overestimates turns; check that the odometry's ω gain from the pose differs from the mocap one by only the IMU drift.
 5. **Mocap vs AMCL** (only for `pose_source:=amcl`): build a map (AgileX's cartographer, or slam_toolbox) with the robot starting at the arena origin facing +x, save it, then start the robots with `amcl:=true map:=<map yaml> x:=.. y:=.. yaw:=..` and on the laptop `ros2 launch limo_real laptop.launch.py checkpoint:=<ck> pose_source:=mocap compare:=true lidar_fov:=<fov>` with the robots' bridges in `dry_run`.
    Drive the robots around by hand (the remote, with the bridge stopped) or let the policy run in shadow mode for a few minutes, then Ctrl-C: `out/real/amcl_vs_mocap/summary.json` holds the mean / p95 position and heading error and the per-episode bias, the same statistics as the Gazebo numbers below.
 
@@ -139,17 +140,25 @@ Keep the numbers: they go to the recipe author (FOV, pose noise, latency) and in
 - `eval.launch.py pose_source:=gt|amcl|mocap` swaps the pose source behind `/robot_i/pose` (`amcl`: walls and boxes outside the arena from `pusht_gz/landmarks.py`, the map generated from the same geometry in `pusht_gz/maps/`, one AMCL per robot, re-initialised at the true pose after every teleport; `mocap`: `fake_mocap` turns ground truth into `/rigid_bodies` for the real `mocap_relay`).
 - `pose_error` logs `/robot_i/pose` against ground truth into `<run>/pose_error/`.
 - In Gazebo `mocap_relay` (fed by `fake_mocap` with 1 mm / 3 mrad noise) is within 1.3 mm of the truth in position and 0.02 m/s in velocity, and the operator console ran a solved episode through it.
-- AMCL during pushing (L5s best checkpoint, greedy, 20 episodes × 2 robots, 119k samples; `limo_bridge/config/amcl.yaml`):
+- AMCL during pushing, L6 (`L6-real-limo-s0-fromL5s` best, greedy, the gz lidar and the policy at a 240° field of view), 20 episodes × 2 robots, ~165k samples each; "raw" is AMCL on the full scan, "tuned" is the shipped setup (`limo_bridge/config/amcl.yaml` on `/robot_i/scan_loc`, the odometry's heading from the IMU):
 
-  | | mean | median | p95 | max |
-  |---|---|---|---|---|
-  | position error [m] | 0.161 | 0.081 | 0.469 | 5.09 |
-  | heading error [rad] | 0.033 | 0.013 | 0.136 | 1.66 |
+  | | raw: mean / median / p95 / max | tuned: mean / median / p95 / max |
+  |---|---|---|
+  | position error [m] | 0.257 / 0.098 / 1.298 / 7.21 | 0.162 / 0.091 / 0.579 / 2.79 |
+  | heading error [rad] | 0.067 / 0.015 / 0.106 / 3.14 | 0.022 / 0.013 / 0.060 / 0.57 |
+  | per-episode bias, position (mean / std / max) [m] | 0.154 / 0.331 / 1.92 | 0.101 / 0.206 / 1.14 |
+  | per-episode bias, heading (mean abs / std / max abs) [rad] | 0.049 / 0.225 / 1.44 | 0.010 / 0.016 / 0.078 |
+  | jitter about the bias (position per axis, heading) | 0.373 m, 0.161 rad | 0.170 m, 0.038 rad |
+  | decorrelation time (position, heading) | 3.7 s, 1.8 s | 3.6 s, 1.6 s |
+  | excursions > 0.3 m: per robot-minute, median / p90 duration, median / p90 peak | 2.2, 0.3 / 8.1 s, 0.34 / 1.25 m | 1.2, 0.5 / 5.8 s, 0.35 / 0.89 m |
+  | free driving (79 % of the time): position median / p95 | | 0.083 / 0.187 m |
+  | ≤ 5 s after a shove (slip > 0.15 m/s; 21 %): position median / p95 | | 0.146 / 1.46 m |
 
-  Per robot and episode, the mean error vector (bias) is 0.111 m on average (max 0.80 m) and 0.022 rad (max 0.19 rad).
-  The error is small most of the time, with excursions of 0.3–0.5 m lasting 5–20 s whenever the T or the teammate shoves a robot without its wheels turning: odometry misses the motion and AMCL takes seconds to pull it back (random-particle recovery and a large translation noise halved those excursions; a sharper laser model, the beam model, beam skipping and more particles did not help).
-- On the same 20 initial states the policy solves 19/20 (0.95, median 26 s) with ground-truth poses and 15/20 (0.75, median 59 s) with AMCL (`out/L5s_gt_landmarks`, `out/L5s_amcl`): AMCL alone costs a fifth of the successes, so use mocap for the policy's poses and AMCL only as a fallback or with a policy trained on AMCL-like pose noise.
-- The Gazebo Limo has the measured specs: 4.8 kg, T-mini Pro (0.02–12 m, σ 0.015 m, 10 Hz, 400 samples per turn), and `lidar_fov` crops the gz lidar to the robot's field of view and blanks the policy's rays outside it.
+  89 % of the excursions above 0.3 m start within 5 s of a shove (the T or the teammate moving the robot faster than its wheels report).
+  Even a robot driving a clean circle with no contact keeps a 5–12 cm offset with every AMCL setting tried (the scans match the walls at the true pose to 2.5 mm, so this is AMCL's own estimate); the 8–9 cm median above is that floor.
+  Tried without gain: `update_min_d` / `update_min_a` 0 (nav2 AMCL still updates only when the odometry moves), a sharper likelihood field, the beam model, beam skipping, 5–10k particles.
+- Success with those poses is not informative for L6: in Gazebo it solves 1/20 with ground-truth poses at 240° (`out/L6_gt_fov240`), 2/20 with tuned AMCL (`out/L6_amcl_fov240`) and 2/20 with raw AMCL; at the full field of view it solved 2/4 with ground truth where L5s solved 4/4.
+- L5s before this tuning (wheel odometry, full scan, full FOV): 19/20 with ground truth and 15/20 with AMCL on the same 20 states (`out/L5s_gt_landmarks`, `out/L5s_amcl`; position error median 0.081 m, p95 0.469 m).
 
 ## What only the hardware can tell
 

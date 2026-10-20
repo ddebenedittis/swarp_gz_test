@@ -37,6 +37,8 @@
   <xacro:arg name="lidar_rate" default="10"/>
   <xacro:arg name="lidar_fov" default="6.283185307179586"/>
   <xacro:arg name="cmd_vel_topic" default=""/>
+  <xacro:arg name="imu_gyro_noise" default="0.002"/>
+  <xacro:arg name="imu_gyro_bias" default="0.001"/>
 
   <xacro:property name="name" value="$(arg robot_name)"/>
   <xacro:property name="p" value="$(arg robot_name)/"/>
@@ -251,6 +253,23 @@
         </noise>
         <visibility_mask>${lidar_mask}</visibility_mask>
       </lidar>
+    </sensor>
+  </gazebo>
+
+  <!-- IMU (the real Limo's odometry takes its heading from it), 100 Hz on /<robot>/imu; the
+       gyro's noise and constant bias make the integrated heading drift like a real one. -->
+  <gazebo reference="${p}base_link">
+    <sensor name="imu" type="imu">
+      <topic>/${name}/imu</topic>
+      <gz_frame_id>${p}base_link</gz_frame_id>
+      <update_rate>100</update_rate>
+      <always_on>true</always_on>
+      <imu>
+        <angular_velocity>
+          <z><noise type="gaussian"><mean>0</mean><stddev>$(arg imu_gyro_noise)</stddev>
+            <bias_mean>$(arg imu_gyro_bias)</bias_mean></noise></z>
+        </angular_velocity>
+      </imu>
     </sensor>
   </gazebo>
 

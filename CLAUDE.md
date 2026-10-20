@@ -72,6 +72,8 @@ limo_bridge   limo_gz_description   pusht_gz_plugins   mocap_msgs
 - OdometryPublisher twist is body-frame; `gt_pose_relay` rotates it to world frame (swarp observes world-frame velocity).
 - `rtf:=0` reaches ~1.6× real time with 2 robots on this machine (physics + 2 lidars), ~1× with the policies and manager running.
 - `/goal` and `/episode` are transient-local (latched); the policy ignores scans stamped before it received the episode start.
+- Odometry: the real `limo_base` integrates the IMU yaw and the chassis speed along it; in Gazebo `robot_bridge` (`imu_topic`) re-integrates the DiffDrive odometry the same way from the gz IMU (gyro noise 0.002 rad/s, bias 0.001 rad/s), because wheel odometry overestimates skid-steer turns by ~26%.
+- AMCL reads `/robot_i/scan_loc` (`robot_bridge` `loc_half`): returns inside the arena (T, robots: not on the map) removed at the robot's latest `/robot_i/pose`; published unmasked until the first pose, or AMCL never starts.
 - `policy_node` republishes its held command on every scan between steps (10 Hz) to feed the 0.3 s watchdog; a step parked waiting for a pose republishes nothing, so a dead pose source stops the robot.
 - The policy drops returns closer than the checkpoint's `lidar_min_range` (0.1 m from the mount) even though the T-mini Pro sees from 0.02 m, and blanks rays outside its `lidar_fov` param (`obs.blank_outside_fov`, swarp's rule).
 - Testing scripts that SIGINT a background job need `set -m`: non-interactive bash starts `&` jobs with SIGINT ignored. `ros2 run` does not forward a SIGINT sent to its own pid; signal the process group.

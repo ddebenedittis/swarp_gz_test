@@ -47,6 +47,7 @@ ARGS = {
     "lidar_noise_stddev": ("0.015", "lidar range noise [m]"),
     "safety_bridge": ("true", "commands through limo_bridge robot_bridge, as on the robots"),
     "amcl_params": ("", "AMCL params yaml (pose_source:=amcl); default limo_bridge/config/amcl.yaml"),
+    "amcl_scan": ("scan_loc", "AMCL's scan topic under /robot_i/"),
     "pose_error": ("auto", "log /robot_i/pose against ground truth into <run>/pose_error; auto: unless gt"),
     # Physical parameters forwarded to pusht_gz sim.launch.py (sim-to-sim knobs).
     "max_linear_acceleration": ("1.0", "diff-drive linear acceleration limit [m/s^2]"),
@@ -144,6 +145,7 @@ def _setup(context):
                 "use_sim_time": "true",
                 "map": os.path.join(get_package_share_directory("pusht_gz"), "maps", "landmarks.yaml"),
                 "amcl_params": a["amcl_params"],
+                "amcl_scan": a["amcl_scan"],
             }.items(),
         ))
     if src == "mocap":

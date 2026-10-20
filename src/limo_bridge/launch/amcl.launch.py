@@ -2,7 +2,7 @@
 
     ros2 launch limo_bridge amcl.launch.py robot_name:=robot_1 map:=/path/arena.yaml x:=-1 y:=0 yaw:=0
 
-Reads ``/<robot>/scan`` and the TF ``<robot>/odom`` -> ``<robot>/base_footprint`` ->
+Reads ``/<robot>/scan_loc`` (robot_bridge's scan without the arena's contents) and the TF ``<robot>/odom`` -> ``<robot>/base_footprint`` ->
 ``<robot>/laser_link`` (robot_bridge, or the Gazebo sim), publishes ``/<robot>/amcl_pose``
 and TF ``map`` -> ``<robot>/odom``. The map frame is the arena frame: the map's origin is
 the arena centre, x along the arena's +x (see limo_real's amcl_relay ``map_to_arena`` for a
@@ -27,6 +27,7 @@ ARGS = {
     "map": ("", "map yaml (nav2 map_server format), in the arena frame"),
     "params": ("", "amcl params yaml; default limo_bridge/config/amcl.yaml"),
     "use_sim_time": ("false", "true in Gazebo"),
+    "scan": ("scan_loc", "scan topic under /<robot>/: robot_bridge's scan_loc has the arena's T and robots removed"),
     "x": ("0.0", "initial x [m]"),
     "y": ("0.0", "initial y [m]"),
     "yaw": ("0.0", "initial yaw [rad]"),
@@ -46,7 +47,7 @@ def _setup(context):
         "base_frame_id": f"{robot}/base_footprint",
         "odom_frame_id": f"{robot}/odom",
         "global_frame_id": "map",
-        "scan_topic": f"/{robot}/scan",
+        "scan_topic": f"/{robot}/{a['scan']}",
         "map_topic": f"/{robot}/map",
         "robot_model_type": "differential" if foxy else "nav2_amcl::DifferentialMotionModel",
         "set_initial_pose": True,

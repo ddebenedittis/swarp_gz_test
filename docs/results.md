@@ -129,6 +129,16 @@ On the measured Limo specs (4.8 kg, T-mini Pro: 400 samples per turn, 0.02–12 
 
 AMCL's pose error over those episodes: position mean 0.161 m, median 0.081 m, p95 0.469 m; heading mean 0.033 rad, p95 0.136 rad; details and the mechanism in [real_robot.md](real_robot.md#gazebo-stand-ins).
 
+L6 (`L6-real-limo-s0-fromL5s` best, trained with the real-Limo sensor, localisation and latency randomisation), greedy, the lidar and the policy at a 240° field of view, IMU-heading odometry, same seeds:
+
+| pose source | Gazebo |
+|---|---|
+| ground truth | 1/20 = 0.050 [0.009, 0.236] |
+| AMCL, full scan | 2/20 = 0.100 [0.028, 0.301] |
+| AMCL, arena returns removed (shipped) | 2/20 = 0.100 [0.028, 0.301] |
+
+L6 does not transfer to Gazebo even with ground-truth poses (at the full field of view it solved 2/4 where L5s solved 4/4), so these rows say nothing about localisation; the AMCL error tables are in [real_robot.md](real_robot.md#gazebo-stand-ins).
+
 ```bash
 src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/remote-davide-cf/L5s-wheelstall-limo-s0-fromL5r/pusht_lidar_limo_dr_wheel_best.pt 2 10 L5s_gt_landmarks 0 landmarks:=true record:=true
 BUILD=0 DOMAIN_BASE=80 src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/remote-davide-cf/L5s-wheelstall-limo-s0-fromL5r/pusht_lidar_limo_dr_wheel_best.pt 2 10 L5s_amcl 0 pose_source:=amcl record:=true

@@ -57,7 +57,8 @@ ARGS = {
     "safety_bridge": ("true", "route /robot_i/cmd_vel through limo_bridge robot_bridge; external: the "
                               "DiffDrive listens on /robot_i/limo/cmd_vel but no bridge is started here"),
     "cmd_timeout": ("0.3", "robot_bridge watchdog [s]"),
-    "odom_yaw_scale": ("0.79", "robot_bridge: true / wheel-odometry turn ratio (measured in Gazebo: 0.79)"),
+    "loc_half": ("2.35", "robot_bridge: /robot_i/scan_loc blanks returns inside this square (the arena's "
+                         "T and robots, not on the map) for AMCL; 0: no scan_loc"),
     "arena_stop": ("2.0", "robot_bridge arena half side [m] (0: no arena stop)"),
     "tee_bar_len": ("1.0", "T crossbar length [m]"),
     "tee_bar_width": ("0.3", "T crossbar width [m]"),
@@ -117,10 +118,11 @@ def _bridge_config(robots: list[str], contacts: bool = False, gt_tf: bool = True
         cfg += [
             _bridge_entry(cmd if safety_bridge else f"/{r}/cmd_vel", "geometry_msgs/msg/Twist", "gz.msgs.Twist",
                           "ROS_TO_GZ", gz=cmd),
-            # Wheel odometry: through robot_bridge (turns scaled by odom_yaw_scale), as on the robot.
+            # Wheel odometry: through robot_bridge (heading from the IMU, as limo_base does).
             _bridge_entry(f"/{r}/limo/odom" if safety_bridge else f"/{r}/odom", *odom, gz=f"/{r}/limo/odom"),
             _bridge_entry(f"/{r}/gt_odom", *odom),
             _bridge_entry(f"/{r}/scan", "sensor_msgs/msg/LaserScan", "gz.msgs.LaserScan", "GZ_TO_ROS"),
+            _bridge_entry(f"/{r}/imu", "sensor_msgs/msg/Imu", "gz.msgs.IMU", "GZ_TO_ROS"),
             _bridge_entry(f"/{r}/joint_states", "sensor_msgs/msg/JointState", "gz.msgs.Model", "GZ_TO_ROS"),
         ]
         if gt_tf:
@@ -245,7 +247,8 @@ def _setup(context):
                     "driver_cmd_vel": f"/{r}/limo/cmd_vel",
                     "relay_scan": False,
                     "driver_odom": f"/{r}/limo/odom",
-                    "odom_yaw_scale": float(a["odom_yaw_scale"]),
+                    "imu_topic": f"/{r}/imu",
+                    "loc_half": float(a["loc_half"]),
                     "publish_tf": not gt,
                     "publish_laser_tf": False,
                     "cmd_timeout": float(a["cmd_timeout"]),

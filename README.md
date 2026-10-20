@@ -47,6 +47,7 @@ Do not set `LIBGL_ALWAYS_SOFTWARE=1` with `/dev/dri` mounted: ogre2 then segfaul
 | `pose_source` | gt | `gt`: ground truth on `/robot_i/pose`, `/tee/pose` and TF; `amcl`: `/tee/pose` only; `mocap`: none (limo_real's relays publish them); not `gt`: odometry TF |
 | `safety_bridge` | true | commands through limo_bridge's `robot_bridge` (clamp, 0.3 s watchdog, `/estop`, arena stop) to the DiffDrive's `/robot_i/limo/cmd_vel`; `external`: no bridge started here |
 | `cmd_timeout`, `arena_stop` | 0.3, 2.0 | `robot_bridge` watchdog [s] and arena half side [m] (0: off) |
+| `loc_half` | 2.35 | `robot_bridge`'s `/robot_i/scan_loc` (AMCL's input) drops returns inside this square (the T and the robots) |
 | `tee_bar_len`, `tee_bar_width`, `tee_stem_len`, `tee_stem_width`, `tee_height` | 1.0, 0.3, 0.7, 0.3, 0.25 | T geometry [m] |
 | `tee_mass`, `tee_mu` | 0.5, 0.3 | T mass [kg] and friction |
 | `tee_floor_friction` | coulomb | `coulomb`: isotropic Coulomb floor friction from `pusht_gz_plugins` (the T on frictionless supports); `contact`: DART's contact friction, which barely turns the T under off-centre pushes |
@@ -64,6 +65,8 @@ Do not set `LIBGL_ALWAYS_SOFTWARE=1` with `/dev/dri` mounted: ogre2 then segfaul
 | `/robot_i/limo/cmd_vel` | `geometry_msgs/Twist` | diff drive (4WD skid steer), acceleration-limited (`robot_bridge`'s output) |
 | `/robot_i/cmd_vel_gated`, `/robot_i/bridge_state` | `Twist`, `String` | what `robot_bridge` sends, and why (`ok`, `stale`, `estop`, `arena`, `no_pose`) |
 | `/estop` | `std_msgs/Bool` | latched; true zeroes every robot |
+| `/robot_i/imu` | `sensor_msgs/Imu` | 100 Hz, gyro noise 0.002 rad/s, bias 0.001 rad/s; `robot_bridge` takes the odometry's heading from it, as the real `limo_base` does |
+| `/robot_i/scan_loc` | `sensor_msgs/LaserScan` | the scan without returns inside the arena, for AMCL |
 | `/robot_i/scan` | `sensor_msgs/LaserScan` | 400 rays, -π..π, 0.02–12 m, 10 Hz, frame `robot_i/laser_link` |
 | `/robot_i/odom` | `nav_msgs/Odometry` | wheel odometry, `robot_i/odom` → `robot_i/base_footprint` |
 | `/robot_i/gt_odom`, `/tee/gt_odom` | `nav_msgs/Odometry` | exact ground truth, world frame, body-frame twist, 50 Hz |

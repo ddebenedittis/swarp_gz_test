@@ -16,10 +16,16 @@ crash, a WiFi drop or a stopped launch would leave the robot driving. This node:
   to ``/<robot>/cmd_vel_gated`` (always published) for logging;
 * relays the driver's ``driver_scan`` -> ``/<robot>/scan`` and ``driver_odom`` ->
   ``/<robot>/odom`` with frames prefixed ``<robot>/`` (and the scan rotated by
-  ``scan_yaw_offset``; the odometry's turns scaled by ``odom_yaw_scale``, the measured
-  true / odometry turn ratio: a skid steer's wheel odometry overestimates turns), and publishes TF ``<robot>/odom`` -> ``<robot>/base_footprint`` and
+  ``scan_yaw_offset``), and publishes TF ``<robot>/odom`` -> ``<robot>/base_footprint`` and
   the static ``<robot>/base_footprint`` -> ``<robot>/laser_link``, so several robots share a
-  ROS domain;
+  ROS domain. With ``imu_topic`` set, the relayed odometry is re-integrated as ``limo_base``
+  integrates it on the real Limo: heading from the IMU's yaw rate, translation from the
+  odometry's forward speed along it (a skid steer's wheel odometry overestimates turns);
+  the real driver already does this, so ``imu_topic`` is for Gazebo;
+* with ``loc_half > 0`` publishes ``/<robot>/scan_loc`` for the localizer: the scan with
+  every return that lands inside the square ``|x|, |y| <= loc_half`` (at the robot's latest
+  ``/<robot>/pose``; unmasked before the first pose) blanked. The arena holds only the T and the robots, which are not on
+  the map: AMCL then matches only the walls and landmarks outside it;
 * reports its gate state on ``/<robot>/bridge_state`` (String, on change and at 1 Hz).
 
 In Gazebo the same node sits between ``/<robot>/cmd_vel`` and the DiffDrive's
@@ -78,14 +84,18 @@ class RobotBridge(Node):
         self.publish_tf = bool(p("publish_tf", True).value)
         publish_laser_tf = bool(p("publish_laser_tf", True).value)
         self.scan_yaw_offset = float(p("scan_yaw_offset", 0.0).value)
-        self.odom_yaw_scale = float(p("odom_yaw_scale", 1.0).value)
-        self._odom_in = None  # last driver odometry pose (x, y, yaw)
-        self._odom_out = (0.0, 0.0, 0.0)  # re-integrated pose with the turns scaled
+        imu_topic = p("imu_topic", "").value
+        self.loc_half = float(p("loc_half", 0.0).value)
+        self.laser_x = float(p("laser_xyz", [0.103, 0.0, 0.116]).value[0])
+        self.imu_yaw = None  # integrated IMU heading
+        self.imu_t = None
+        self.odom_t = None
+        self.odom_pose = (0.0, 0.0, 0.0)  # re-integrated (x, y, yaw) with imu_topic
         prefix = self.robot + "/"
         self.odom_frame = prefix + p("odom_frame", "odom").value
         self.base_frame = prefix + p("base_frame", "base_footprint").value
         self.laser_frame = prefix + p("laser_frame", "laser_link").value
-        laser_xyz = [float(v) for v in p("laser_xyz", [0.103, 0.0, 0.116]).value]
+        laser_xyz = [float(v) for v in self.get_parameter("laser_xyz").value]
 
         self.cmd = None  # (v, w)
         self.cmd_t = -math.inf
@@ -100,9 +110,16 @@ class RobotBridge(Node):
         self.driver_pub = None if self.dry_run else self.create_publisher(Twist, driver_cmd, 10)
         self.gated_pub = self.create_publisher(Twist, r + "/cmd_vel_gated", 10)
         self.state_pub = self.create_publisher(String, r + "/bridge_state", LATCHED)
-        if relay_scan:
-            self.scan_pub = self.create_publisher(LaserScan, r + "/scan", qos_profile_sensor_data)
-            self.create_subscription(LaserScan, driver_scan, self._on_scan, qos_profile_sensor_data)
+        self.scan_pub = self.create_publisher(LaserScan, r + "/scan", qos_profile_sensor_data) if relay_scan else None
+        self.loc_pub = (self.create_publisher(LaserScan, r + "/scan_loc", qos_profile_sensor_data)
+                        if self.loc_half > 0 else None)
+        if relay_scan or self.loc_pub is not None:
+            self.create_subscription(LaserScan, driver_scan if relay_scan else r + "/scan", self._on_scan,
+                                     qos_profile_sensor_data)
+        if imu_topic:
+            from sensor_msgs.msg import Imu
+
+            self.create_subscription(Imu, imu_topic, self._on_imu, qos_profile_sensor_data)
         if relay_odom or self.publish_tf:
             self.odom_pub = self.create_publisher(Odometry, r + "/odom", 10) if relay_odom else None
             self.tf_pub = self.create_publisher(TFMessage, "/tf", 10) if self.publish_tf else None
@@ -149,35 +166,55 @@ class RobotBridge(Node):
         m.header.frame_id = self.laser_frame
         m.angle_min += self.scan_yaw_offset
         m.angle_max += self.scan_yaw_offset
-        self.scan_pub.publish(m)
+        if self.scan_pub is not None:
+            self.scan_pub.publish(m)
+        if self.loc_pub is not None and self.pose is None:
+            self.loc_pub.publish(m)  # no pose yet (the localizer starting): nothing to mask with
+        elif self.loc_pub is not None:
+            x, y, th = self.pose
+            lx, ly = x + self.laser_x * math.cos(th), y + self.laser_x * math.sin(th)
+            h = self.loc_half
+            ranges = list(m.ranges)
+            for k, rng in enumerate(ranges):
+                if math.isfinite(rng):
+                    a = th + m.angle_min + k * m.angle_increment
+                    if abs(lx + rng * math.cos(a)) <= h and abs(ly + rng * math.sin(a)) <= h:
+                        ranges[k] = math.inf
+            m.ranges = ranges
+            self.loc_pub.publish(m)
 
-    def _rescale(self, m: Odometry) -> None:
-        """Re-integrate the driver's odometry with every turn increment scaled by
-        ``odom_yaw_scale`` (translations kept, in the corrected heading)."""
-        q = m.pose.pose.orientation
-        cur = (m.pose.pose.position.x, m.pose.pose.position.y, yaw_of(q))
-        prev, self._odom_in = self._odom_in, cur
-        x, y, th = self._odom_out
-        if prev is not None:
-            c, s = math.cos(prev[2]), math.sin(prev[2])
-            ddx, ddy = cur[0] - prev[0], cur[1] - prev[1]
-            dx, dy = c * ddx + s * ddy, -s * ddx + c * ddy
-            dth = math.atan2(math.sin(cur[2] - prev[2]), math.cos(cur[2] - prev[2]))
-            x += math.cos(th) * dx - math.sin(th) * dy
-            y += math.sin(th) * dx + math.cos(th) * dy
-            th = math.atan2(math.sin(th + self.odom_yaw_scale * dth), math.cos(th + self.odom_yaw_scale * dth))
-        else:
-            x, y, th = cur
-        self._odom_out = (x, y, th)
+    @staticmethod
+    def _stamp(msg) -> float:
+        return msg.header.stamp.sec + 1e-9 * msg.header.stamp.nanosec
+
+    def _on_imu(self, m) -> None:
+        t = self._stamp(m)
+        if self.imu_t is not None and 0.0 < t - self.imu_t < 0.5:
+            self.imu_yaw += m.angular_velocity.z * (t - self.imu_t)
+        elif self.imu_yaw is None:
+            self.imu_yaw = 0.0
+        self.imu_t = t
+
+    def _imu_odometry(self, m: Odometry) -> None:
+        """limo_base's integration: heading from the IMU, the forward speed along it."""
+        t = self._stamp(m)
+        x, y, _ = self.odom_pose
+        th = self.imu_yaw
+        if self.odom_t is not None and 0.0 < t - self.odom_t < 0.5:
+            dt = t - self.odom_t
+            x += math.cos(th) * m.twist.twist.linear.x * dt
+            y += math.sin(th) * m.twist.twist.linear.x * dt
+        self.odom_t = t
+        self.odom_pose = (x, y, th)
         m.pose.pose.position.x, m.pose.pose.position.y = x, y
+        q = m.pose.pose.orientation
         q.x, q.y, q.z, q.w = 0.0, 0.0, math.sin(th / 2.0), math.cos(th / 2.0)
-        m.twist.twist.angular.z *= self.odom_yaw_scale
 
     def _on_odom(self, m: Odometry) -> None:
         m.header.frame_id = self.odom_frame
         m.child_frame_id = self.base_frame
-        if self.odom_yaw_scale != 1.0:
-            self._rescale(m)
+        if self.imu_yaw is not None:
+            self._imu_odometry(m)
         if self.odom_pub is not None:
             self.odom_pub.publish(m)
         if self.tf_pub is not None:

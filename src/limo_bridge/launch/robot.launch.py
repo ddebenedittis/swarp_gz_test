@@ -40,7 +40,8 @@ ARGS = {
     "arena_margin": ("0.25", "allowed overshoot past the arena edge [m]"),
     "pose_timeout": ("0.5", "with the arena stop on, stop when /<robot>/pose is older [s]"),
     "scan_yaw_offset": ("0.0", "added to the scan angles so that 0 is the robot's heading [rad]"),
-    "odom_yaw_scale": ("1.0", "true / odometry turn ratio (measure_step_response: mocap / odom w gain)"),
+    "loc_half": ("2.35", "/<robot>/scan_loc (AMCL's input) blanks returns inside this square around the "
+                         "arena centre [m]; 0: off"),
     "laser_xyz": ("0.103,0.0,0.116", "lidar origin from base_footprint [m]"),
     "amcl": ("false", "run AMCL onboard"),
     "map": ("", "map yaml for amcl (arena frame)"),
@@ -91,7 +92,7 @@ def _setup(context):
             "arena_margin": float(a["arena_margin"]),
             "pose_timeout": float(a["pose_timeout"]),
             "scan_yaw_offset": float(a["scan_yaw_offset"]),
-            "odom_yaw_scale": float(a["odom_yaw_scale"]),
+            "loc_half": float(a["loc_half"]),
             "laser_xyz": [float(v) for v in a["laser_xyz"].split(",")],
             "driver_cmd_vel": f"{limo}/cmd_vel" if _true(a["driver"]) else "/cmd_vel",
             "driver_odom": f"{limo}/odom" if _true(a["driver"]) else "/odom",

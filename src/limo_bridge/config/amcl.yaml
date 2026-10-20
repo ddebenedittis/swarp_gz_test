@@ -2,16 +2,21 @@
 # frames (map, <robot>/odom, <robot>/base_footprint), the scan topic, robot_model_type
 # (it differs between Foxy and Humble+) and the initial pose.
 #
-# Tuned for Push-T rather than navigation: updates every 2 cm / 0.03 rad (the robots move
-# slowly and the policy reads the pose at 10 Hz); a 0.3 m minimum range ignores the robot's
-# own chassis and the T or teammate right next to it (clutter that is not on the map); a
-# large rotation noise because the skid-steer odometry overestimates turns (commanded
-# w = 1.0 turns at ~0.79 rad/s in Gazebo; robot_bridge's odom_yaw_scale removes most of it);
-# large translation noise and random-particle recovery, because a robot shoved by the T or
-# its teammate moves without its wheels turning, and without fresh particles the filter
-# never catches up (the pose error then stayed at 0.3-0.5 m for tens of seconds). Tuned on
-# Gazebo pushing episodes against a few variants (sharper laser model, beam model, beam
-# skipping, more particles): these were the best or equal.
+# Tuned for Push-T in Gazebo (L6 pushing episodes, docs/real_robot.md):
+# - the scan is robot_bridge's /<robot>/scan_loc, without the returns inside the arena (the
+#   T and the robots, not on the map): p95 position error 1.30 -> 0.58 m, p95 heading
+#   0.106 -> 0.060 rad, no more flipped headings; laser_min_range 0.3 drops the chassis;
+# - update every 2 cm / 0.03 rad: nav2 AMCL filters only when the odometry moved past the
+#   thresholds (strictly), so 0 / 0 updates on every scan while moving but still never for
+#   a robot shoved with its wheels and IMU still; 0 / 0 measured no better than these;
+# - large translation noise (alpha3/4 0.5) and random-particle recovery: a robot shoved by
+#   the T or its teammate moves without its odometry seeing it, and without them the
+#   estimate stayed 0.3-0.5 m off for tens of seconds;
+# - the odometry's heading comes from the IMU (limo_base; robot_bridge's imu_topic in
+#   Gazebo), so alpha1/2 matter less;
+# - a sharper likelihood field (sigma_hit 0.05-0.1, max_dist 0.3-1.0, 180 beams), the beam
+#   model, beam skipping and more particles were no better; driving a clean circle leaves
+#   a 5-12 cm offset with every setting tried.
 /**:
   ros__parameters:
     alpha1: 0.4
