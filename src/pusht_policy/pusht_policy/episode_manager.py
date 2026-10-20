@@ -131,6 +131,13 @@ class EpisodeManager(Node):
             lambda: self.episode_pub.get_subscription_count() >= len(self.robots), 120.0,
             f"{len(self.robots)} policy nodes on /episode",
         )
+        if self.initialpose:
+            # Every localizer must be up and publishing before the first episode: a robot
+            # without a pose estimate would never be driven (a node that never came up under
+            # load). Failing here lets eval_shards restart the shard.
+            self._send_initial_poses()
+            self.spin_until(lambda: all(r in self.est for r in self.robots), 120.0,
+                            "pose estimates from every localizer")
 
     def teleport(self, state: dict) -> None:
         poses = {r: p for r, p in zip(self.robots, state["robots"], strict=True)}
@@ -159,8 +166,17 @@ class EpisodeManager(Node):
             self.get_logger().warn(f"teleport off by {err:.3f} m (attempt {attempt}), retrying")
         raise RuntimeError("could not teleport the bodies to the episode's initial state")
 
-    def localize(self) -> None:
-        """Re-initialize the localizers at the true poses and wait until they agree."""
+    def localize(self, attempts: int = 3) -> None:
+        """Re-initialize the localizers at the true poses and wait until they agree; an
+        initial pose AMCL took at a bad moment (a TF lookup into the future) is sent again."""
+        for attempt in range(attempts):
+            self._send_initial_poses()
+            if self._wait_localized(self.localize_timeout):
+                return
+            self.get_logger().warn(f"localizers off the initial poses (attempt {attempt + 1}), re-sending")
+        self.get_logger().warn("localizers did not converge on the initial poses; starting anyway")
+
+    def _send_initial_poses(self) -> None:
         for r in self.robots:
             _, x, y, th = self.pose[r]
             m = PoseWithCovarianceStamped()
@@ -174,6 +190,7 @@ class EpisodeManager(Node):
             m.pose.covariance = cov
             self.init_pubs[r].publish(m)
 
+    def _wait_localized(self, timeout: float) -> bool:
         def agree() -> bool:
             for r in self.robots:
                 e, g = self.est.get(r), self.pose[r]
@@ -185,10 +202,10 @@ class EpisodeManager(Node):
 
         t0 = self.now()
         while not agree():
-            if self.now() - t0 > self.localize_timeout:
-                self.get_logger().warn("localizers did not converge on the initial poses; starting anyway")
-                return
+            if self.now() - t0 > timeout:
+                return False
             rclpy.spin_once(self, timeout_sec=0.01)
+        return True
 
     def tee_error(self, goal) -> tuple[float, float]:
         _, x, y, th = self.pose["tee"]

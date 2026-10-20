@@ -168,3 +168,29 @@ src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/remote-davide-cf/L5s-w
 BUILD=0 DOMAIN_BASE=80 src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/remote-davide-cf/L5s-wheelstall-limo-s0-fromL5r/pusht_lidar_limo_dr_wheel_best.pt 2 10 L5s_amcl 0 pose_source:=amcl record:=true
 ros2 run limo_real pose_error_merge out/L5s_amcl/shard0/pose_error out/L5s_amcl/shard1/pose_error
 ```
+
+## L7: field of view cut at the mount, AMCL-sized pose drift
+
+L7 (`L7-amcl-mount-limo-s0-fromL6` best, recipe `pusht_lidar_limo_amcl`), greedy, seeds 0–3 (40 episodes per cell, 4 shards of 10 run 4 at a time), landmarks on, the policy cutting the raw scan at the mount (`lidar_fov_at_mount` from the checkpoint, no per-ray blanking) to the same field of view as the gz lidar:
+
+| pose source | FOV | Gazebo | median solve time | failures: left arena / near goal, angle off / near goal, position off / T far |
+|---|---|---|---|---|
+| ground truth | 360° | 18/40 = 0.450 [0.307, 0.602] | 41.9 s | 1 / 5 / 3 / 13 |
+| ground truth | 240° at the mount | 5/40 = 0.125 [0.055, 0.261] | 61.0 s | 3 / 7 / 3 / 22 |
+| AMCL | 360° | 11/36 = 0.306 [0.180, 0.469] | 54.6 s | 3 / 9 / 0 / 13 |
+| AMCL | 240° at the mount | 3/40 = 0.075 [0.026, 0.199] | 81.8 s | 5 / 6 / 2 / 24 |
+
+The 360° AMCL cell has 36 episodes: its fourth shard's Gazebo failed to start twice (`/clock` never came) and its third attempt finished 6.
+AMCL error during these runs:
+
+| | 360° | 240° at the mount |
+|---|---|---|
+| position mean / median / p95 / max [m] | 0.096 / 0.069 / 0.297 / 1.27 | 0.141 / 0.094 / 0.457 / 1.92 |
+| heading mean / median / p95 [rad] | 0.018 / 0.010 / 0.059 | 0.020 / 0.014 / 0.052 |
+| per-episode bias, position mean / std / max [m] | 0.067 / 0.045 / 0.33 | 0.111 / 0.117 / 0.74 |
+| jitter about the bias (position per axis, heading) | 0.085 m, 0.029 rad | 0.132 m, 0.029 rad |
+| decorrelation time (position, heading) | 5.2 s, 2.7 s | 8.0 s, 3.9 s |
+| position median / p95, free driving / ≤ 5 s after a shove | 0.067 / 0.243, 0.144 / 0.440 m | 0.091 / 0.369, 0.213 / 1.14 m |
+
+The policy's lidar frames match analytic mount-cut rays on the true poses in 97.7% (360°) and 97.0% (240°) of the T-hit rays, so the weak ground-truth rows are the policy's behaviour in Gazebo, not its input.
+Running the two AMCL cells at once (8 simulations) starved some localizers, which never processed a scan; the episode manager now refuses to start until every robot has a pose estimate and re-sends initial poses that did not converge (those runs are kept as `out/L7_amcl_*_overloaded` and not reported).
