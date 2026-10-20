@@ -137,7 +137,25 @@ L6 (`L6-real-limo-s0-fromL5s` best, trained with the real-Limo sensor, localisat
 | AMCL, full scan | 2/20 = 0.100 [0.028, 0.301] |
 | AMCL, arena returns removed (shipped) | 2/20 = 0.100 [0.028, 0.301] |
 
-L6 does not transfer to Gazebo even with ground-truth poses (at the full field of view it solved 2/4 where L5s solved 4/4), so these rows say nothing about localisation; the AMCL error tables are in [real_robot.md](real_robot.md#gazebo-stand-ins).
+At 240° these rows say nothing about localisation: the field of view itself breaks the policy (below). The AMCL error tables are in [real_robot.md](real_robot.md#gazebo-stand-ins).
+
+### The field of view is defined at the robot centre in swarp, at the mount on a lidar
+
+swarp blanks the robot-centre rays more than `fov/2` off the heading; a real lidar, and the cropped gz one, loses everything more than `fov/2` off the heading as seen from its mount, 0.103 m ahead.
+A T against the robot's side at centre bearing 101–112° (rays k = ±9, ±10) is at ~125–145° from the mount: a physical 240° hides it while swarp shows it.
+Ground-truth poses, seeds 0–1, 20 episodes each:
+
+| checkpoint | mode | gz lidar | policy blanking | Gazebo | failures: left arena / near goal, angle off / T far |
+|---|---|---|---|---|---|
+| L6 | greedy | full | none | 17/20 = 0.850 | 0 / 1 / 2 |
+| L6 | sampled | full | none | 15/20 = 0.750 | 0 / 2 / 3 |
+| L6 | greedy | cropped to 240° at the mount | 240° | 1/20 = 0.050 | 7 / 2 / 10 |
+| L6 | sampled | cropped to 240° | 240° | 0/20 | 5 / 1 / 14 |
+| L5s | greedy | cropped to 240° | 240° | 1/20 = 0.050 | 7 / 2 / 10 |
+| L6 | greedy | full | 240° | 11/20 = 0.550 | 3 / 1 / 5 |
+
+Against analytic centre rays on the recorded true poses, 16% of the T-hit rays in the policy's frames are wrong with the crop, nearly all at k = ±9, ±10 (k = 10: 7680 of 8419), against 1.5% without it.
+`eval.launch.py sim_lidar_fov:=` crops the gz lidar independently of the policy's `lidar_fov`.
 
 ```bash
 src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/remote-davide-cf/L5s-wheelstall-limo-s0-fromL5r/pusht_lidar_limo_dr_wheel_best.pt 2 10 L5s_gt_landmarks 0 landmarks:=true record:=true

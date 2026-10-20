@@ -118,6 +118,7 @@ class PolicyNode(Node):
         torch.set_num_threads(1)
         self.actor, _, meta = load_checkpoint(ckpt, "cpu")
         self.cfg = ObsConfig.from_checkpoint(meta)
+        self._check_sensor(meta, bool(self.declare_parameter("allow_fov_below_trained", False).value))
         n_robots = int(self.declare_parameter("n_robots", self.cfg.n_agents).value)
         if n_robots != self.cfg.n_agents:
             raise ValueError(f"checkpoint has {self.cfg.n_agents} agents, n_robots={n_robots}")
@@ -164,6 +165,30 @@ class PolicyNode(Node):
             f"{self.cfg.max_range} m, frame_stack {self.cfg.frame_stack}, "
             f"{'sampled' if self.sample else 'greedy'} actions"
         )
+
+    def _check_sensor(self, meta, allow_fov_below: bool) -> None:
+        """The deployment lidar against the checkpoint's sensor model. The minimum range comes
+        from the checkpoint (``ObsConfig.lidar_min_range``, from the mount); the field of view
+        is the robot's own (``lidar_fov``), refused below the narrowest one trained on unless
+        ``allow_fov_below_trained``; a mount differing from the trained one is reported."""
+        from pusht_policy.obs import _parse
+
+        kw = {k: _parse(v) for k, v in dict(meta.get("scen_kwargs", {})).items()}
+        fov = kw.get("lidar_fov", 2.0 * math.pi)
+        fov_min = float(min(fov) if isinstance(fov, (tuple, list)) else fov)
+        if self.lidar_fov < fov_min - 1e-3:
+            msg = (f"lidar_fov {math.degrees(self.lidar_fov):.0f} deg is below the checkpoint's trained "
+                   f"minimum {math.degrees(fov_min):.0f} deg: the policy never saw so narrow a scan")
+            if not allow_fov_below:
+                raise ValueError(msg + " (set allow_fov_below_trained to run anyway)")
+            self.get_logger().warn(msg)
+        mount = float(kw.get("lidar_mount_offset", 0.0))
+        if abs(mount - self.mount_x) > 1e-3:
+            self.get_logger().warn(
+                f"lidar_mount_x {self.mount_x} m differs from the checkpoint's lidar_mount_offset {mount} m")
+        self.get_logger().info(
+            f"lidar: min range {self.cfg.lidar_min_range} m from the mount (checkpoint), field of view "
+            f"{math.degrees(self.lidar_fov):.0f} deg (trained >= {math.degrees(fov_min):.0f} deg), mount {self.mount_x} m")
 
     # ------------------------------------------------------------------ inputs
 

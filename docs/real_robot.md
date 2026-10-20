@@ -101,7 +101,9 @@ Keep the numbers: they go to the recipe author (FOV, pose noise, latency) and in
 2. **Static lidar scan** (robot in open space, one narrow object 1 m straight ahead): `ros2 run limo_real measure_lidar_static --ros-args -p robot:=robot_i`.
    It reports the self-return and blind sectors, the unobstructed field of view `fov_rad`, and the object's bearing `probe_bearing_deg`.
    If the bearing is not ~0, restart the robot with `scan_yaw_offset:=<minus the bearing, in rad>` and repeat.
-   Use `fov_rad` (the smallest over the robots) as `lidar_fov` everywhere below and send it to the recipe author.
+   Use `fov_rad` (the smallest over the robots) as `lidar_fov` everywhere below and send it to the recipe author; `policy_node` refuses a `lidar_fov` below the checkpoint's narrowest trained one (240° for L6) unless `allow_fov_below_trained`.
+   This FOV is measured from the mount, while swarp's `lidar_fov` (through L6) blanks the robot-centre rays: a physical 240° hides a T against the robot's side that a 240° policy expects to see, which in Gazebo takes L6 from 11/20 (full scan, policy blanking at 240°) to 1/20 (lidar cropped to 240°; `docs/results.md`); until the recipe blanks by the bearing from the mount, a robot needs about 290° at the mount to serve a 240° policy.
+   Repeat with `-p checkpoint:=<ck>`: `policy_rays_hit` lists the policy's binned rays that read a hit in open space; it must be empty, or the robot sees its own wheels or mount as obstacles (the checkpoint's minimum range is 0.02 m for L6, so returns within 2 cm of the lidar are all that is dropped besides the footprint).
 3. **Lidar rate and latency**: `ros2 run limo_real measure_lidar_rate --ros-args -p robot:=robot_i`.
    Expect ~10 Hz, few gaps, and `receive_minus_stamp_s.mean` of a few ms; a large or negative value means the clocks are not synchronised (fix chrony before going on).
 4. **Step response** (bridge running normally, ~1.5 m free ahead, mocap on): restart the robot side without `dry_run`, then `ros2 run limo_real measure_step_response --ros-args -p robot:=robot_i`.

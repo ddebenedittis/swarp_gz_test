@@ -15,6 +15,12 @@ in 2-degree bins (0 = the robot's heading, CCW):
 * ``probe_bearing_deg``: the bearing of the nearest return within ±30 deg of the heading
   beyond ``self_radius``: should be 0; if not, set ``scan_yaw_offset`` to minus it.
 
+With ``checkpoint`` set, also the policy's view: every scan turned into the checkpoint's
+binned rays (its minimum range from the mount, the robot's own footprint dropped, the
+arena around the robot) as policy_node does, and ``policy_rays_hit``: the rays that
+read a hit in most scans. In open space with nothing within the lidar's policy range this
+must be empty; a hit there is the robot seeing itself (wheels, mount, cables) as an obstacle.
+
 Saves the raw ranges to ``<out>/lidar_static_<robot>.npz``.
 """
 
@@ -41,6 +47,8 @@ class LidarStatic(Node):
         self.self_radius = float(p("self_radius", 0.25).value)
         self.probe_range = float(p("probe_range", 1.0).value)
         self.out = p("out", "out/measure").value
+        self.checkpoint = p("checkpoint", "").value
+        self.mount_x = float(p("lidar_mount_x", 0.103).value)
         self.scans: list[LaserScan] = []
         self.create_subscription(LaserScan, f"/{self.robot}/scan", self.scans.append, qos_profile_sensor_data)
 
@@ -84,6 +92,7 @@ class LidarStatic(Node):
             if idx.size:
                 runs = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)
                 sectors.append({name: [[int(bins[r[0]]), int(bins[r[-1]] + 2)] for r in runs]})
+        policy = self._policy_view() if self.checkpoint else None
         s0 = self.scans[-1]
         os.makedirs(self.out, exist_ok=True)
         np.savez_compressed(os.path.join(self.out, f"lidar_static_{self.robot}.npz"), ranges=np.array(raw, dtype=object),
@@ -94,7 +103,27 @@ class LidarStatic(Node):
             "range_min": s0.range_min, "range_max": s0.range_max,
             "sectors": sectors, "fov_deg": 2 * half, "fov_rad": round(math.radians(2 * half), 4),
             "probe_bearing_deg": round(float(np.median(probe)), 2) if probe else None,
+            **({"policy_rays_hit": policy} if policy is not None else {}),
         }
+
+    def _policy_view(self) -> list:
+        """Rays (index, bearing deg, share of scans) the checkpoint's observation reads as hits."""
+        import torch
+        from pusht_policy.obs import ObsConfig, label_rays, scan_to_rays
+
+        cfg = ObsConfig.from_checkpoint(torch.load(self.checkpoint, map_location="cpu", weights_only=False))
+        hits = np.zeros(cfg.n_rays)
+        for s in self.scans:
+            rays, _ = scan_to_rays(
+                s.ranges, s.angle_min, s.angle_increment, max(s.range_min, cfg.lidar_min_range), s.range_max,
+                (self.mount_x, 0.0), 0.0, cfg.n_rays, cfg.max_range,
+                own_half=cfg.half_extents if cfg.agent_shape == "box" else None, body_frame=cfg.body_frame)
+            _, cls = label_rays(rays, (0.0, 0.0, 0.0), cfg.max_range, cfg.world_size, np.zeros((0, 2)),
+                                np.zeros(0), body_frame=cfg.body_frame)
+            hits += cls != 0
+        share = hits / len(self.scans)
+        return [[int(k), round(k * 360.0 / cfg.n_rays, 2), round(float(share[k]), 2)]
+                for k in np.flatnonzero(share > 0.5)]
 
 
 def main(args=None) -> None:
