@@ -273,17 +273,18 @@ class PolicyNode(Node):
             max(scan.range_min, cfg.lidar_min_range), scan.range_max,
             (self.mount_x, 0.0), 0.0, cfg.n_rays, cfg.max_range,
             pose=me, own_half=cfg.half_extents if cfg.agent_shape == "box" else None,
-            body_frame=cfg.body_frame,
+            body_frame=cfg.body_frame, span=cfg.lidar_span,
         )
         box = cfg.agent_shape == "box"
         ranges, cls = label_rays(
-            rays, me, cfg.max_range, cfg.world_size, pos[self.mates], theta[self.mates],
+            rays, me, cfg.max_range, cfg.label_bound, pos[self.mates], theta[self.mates],
             mate_half=cfg.half_extents if box else None,
             mate_radius=None if box else cfg.agent_radius,
-            body_frame=cfg.body_frame,
+            body_frame=cfg.body_frame, span=cfg.lidar_span,
         )
         if not cfg.lidar_fov_at_mount:
-            ranges, cls = blank_outside_fov(ranges, cls, self.lidar_fov, cfg.max_range)
+            ranges, cls = blank_outside_fov(ranges, cls, self.lidar_fov, cfg.max_range,
+                                            span=cfg.lidar_span)
         gx, gy, gth = self.goal
         obs = self.builder.build(pos, vel, theta, self.roles, np.array([gx, gy]), gth, ranges, cls)
         act = self._act(torch.from_numpy(obs)[None])

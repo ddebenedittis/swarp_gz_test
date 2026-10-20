@@ -10,8 +10,9 @@ unit test, and on a robot. Two halves:
   as swarp would see it.
 * :func:`scan_to_rays` and :func:`label_rays` turn a real 2D LaserScan into that ``R``-ray
   scan: swarp's rays are infinitely thin, start at the robot centre (not at the lidar),
-  ray ``r`` points at ``r * 2 pi / R`` from the heading (counter-clockwise, ray 0 forward),
-  and the arena walls are invisible to them.
+  ray ``r`` points at ``r * 2 pi / R`` from the heading (counter-clockwise, ray 0 forward;
+  over a ``lidar_span`` below ``2 pi``, from ``-span / 2`` to ``+span / 2`` in ``R - 1``
+  steps), and the arena walls are invisible to them.
 
 Observation at ``obs_level=1``, ``A`` robots, ``R`` rays, ``F`` stacked frames (all in the
 world frame unless noted)::
@@ -77,6 +78,9 @@ class ObsConfig:
     lidar_body_frame: bool | None = None  # None: whenever the heading matters
     lidar_min_range: float = 0.0  # from the lidar origin; returns closer than this are misses
     lidar_fov_at_mount: bool = False  # the field of view is cut at the mount, not per centre ray
+    lidar_span: float = 2.0 * math.pi  # the angle the rays span, centred on the heading
+    open_arena: bool = False  # no walls: hits are labelled up to label_bound
+    oob_margin: float | None = None  # the T fails its episode past world_size + this
 
     def __post_init__(self) -> None:
         if self.obs_level != 1:
@@ -111,6 +115,14 @@ class ObsConfig:
         if self.agent_half_extents is not None:
             return tuple(float(x) for x in self.agent_half_extents)
         return (self.agent_radius, 0.5 * self.agent_radius)
+
+    @property
+    def label_bound(self) -> float:
+        """How far out on either axis a hit still counts (swarp's ``label_bound``): the
+        out-of-bounds limit when there is one, else the arena (none in an open arena)."""
+        if self.oob_margin is not None:
+            return self.world_size + float(self.oob_margin)
+        return math.inf if self.open_arena else self.world_size
 
     @property
     def pusher_count(self) -> int:
@@ -234,8 +246,13 @@ def _rot(theta: float) -> np.ndarray:
     return np.array([[c, -s], [s, c]])
 
 
-def ray_angles(n_rays: int) -> np.ndarray:
-    """swarp's full-circle ray angles relative to the ray frame: ray 0 forward, CCW."""
+def ray_angles(n_rays: int, span: float = 2.0 * math.pi) -> np.ndarray:
+    """swarp's ray angles relative to the ray frame, counter-clockwise: over the full
+    circle ray 0 forward, ``2 pi / n_rays`` apart; over a smaller ``span`` from ``-span / 2``
+    to ``+span / 2`` (``PushTLidarScenario(lidar_span=...)``)."""
+    if span < 2.0 * math.pi:
+        step = span / (n_rays - 1) if n_rays > 1 else 0.0
+        return -0.5 * span + np.arange(n_rays) * step
     return np.arange(n_rays) * (2.0 * math.pi / n_rays)
 
 
@@ -279,8 +296,10 @@ def scan_to_rays(
     own_margin: float = -0.03,
     max_gap: float = 0.15,
     body_frame: bool = True,
+    span: float = 2.0 * math.pi,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Resample a LaserScan to swarp's ``n_rays`` thin rays from the robot centre.
+    """Resample a LaserScan to swarp's ``n_rays`` thin rays from the robot centre, over
+    ``span`` (:func:`ray_angles`).
 
     Returns ``(ray ranges [n_rays], valid scan points [N, 2] in the world frame)``; a ray
     that hits nothing within ``max_range`` reads ``max_range``. ``pose = (x, y, theta)``
@@ -325,7 +344,7 @@ def scan_to_rays(
         )
         valid &= ~inside
     x, y, th = (float(v) for v in pose)
-    phi = ray_angles(n_rays) if body_frame else ray_angles(n_rays) - th
+    phi = ray_angles(n_rays, span) if body_frame else ray_angles(n_rays, span) - th
     d = np.stack([np.cos(phi), np.sin(phi)], axis=-1)  # [R, 2] body frame
     best = np.full(n_rays, float(max_range))
 
@@ -391,22 +410,27 @@ def label_rays(
     *,
     margin: float = 0.03,
     body_frame: bool = True,
+    span: float = 2.0 * math.pi,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Classify each ray's hit point: ``(ranges, hit_class)``, both ``[n_rays]``.
 
-    * no hit (``range >= max_range``), or a hit outside the arena square
+    * no hit (``range >= max_range``), or a hit outside the square
       ``|x| > world_size or |y| > world_size`` -> :data:`HIT_NONE` and ``max_range``:
-      swarp's walls are a position clamp, invisible to its lidar;
+      swarp's walls are a position clamp, invisible to its lidar (pass
+      :attr:`ObsConfig.label_bound` as ``world_size``: in an open arena it reaches past
+      the walls, to where the T fails its episode);
     * a hit inside a teammate's footprint grown by ``margin`` (an oriented box of
       ``mate_half``, or a disc of ``mate_radius``) -> :data:`HIT_AGENT`; this wins over the
       T, as swarp's ties go to agents;
     * anything else -> :data:`HIT_MOVABLE` (the T).
 
-    ``mates_pos [M, 2]`` / ``mates_theta [M]`` are the other robots' world poses.
+    ``mates_pos [M, 2]`` / ``mates_theta [M]`` are the other robots' world poses; the rays
+    span ``span`` (:func:`ray_angles`). swarp's ``lidar_label_from_pose`` trains on this
+    rule applied to the poses the robots report.
     """
     r = np.asarray(ray_ranges, dtype=np.float64).copy()
     x, y, th = (float(v) for v in pose)
-    phi = ray_angles(r.size) + (th if body_frame else 0.0)
+    phi = ray_angles(r.size, span) + (th if body_frame else 0.0)
     hx = x + r * np.cos(phi)
     hy = y + r * np.sin(phi)
     cls = np.full(r.size, HIT_MOVABLE, dtype=np.uint8)
@@ -448,7 +472,8 @@ def crop_fov_at_mount(
 
 
 def blank_outside_fov(
-    ranges: np.ndarray, hit_class: np.ndarray, fov: float, max_range: float
+    ranges: np.ndarray, hit_class: np.ndarray, fov: float, max_range: float,
+    span: float = 2.0 * math.pi,
 ) -> tuple[np.ndarray, np.ndarray]:
     """swarp's field-of-view blanking (``lidar_fov``): ray ``r``, at ``r * 2 pi / R`` off the
     heading (wrapped to ``(-pi, pi]``), reads as a miss (``max_range``, :data:`HIT_NONE`)
@@ -459,7 +484,7 @@ def blank_outside_fov(
     cls = np.asarray(hit_class).copy()
     if fov >= 2.0 * math.pi:
         return r, cls
-    off = ray_angles(r.size)
+    off = ray_angles(r.size, span)
     rel = np.arctan2(np.sin(off), np.cos(off))
     blind = np.abs(rel) > 0.5 * fov + FOV_EPS
     r[blind] = max_range

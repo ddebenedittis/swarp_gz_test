@@ -59,6 +59,14 @@ REAL = dict(
     pose_noise=0.0,
     cmd_latency=0.0,
 )
+# L8's layout (pusht_lidar_limo_slim240): the slim T, 43 rays over +-120 deg, the field of
+# view cut at the mount and an open arena labelled out to the out-of-bounds limit.
+SPAN240 = dict(
+    REAL,
+    bar_len=0.5, bar_width=0.04, stem_len=0.5, stem_width=0.04,
+    n_rays=43, lidar_span=4.18879, lidar_fov=4.18879, lidar_fov_at_mount=True,
+    open_arena=True, oob_margin=0.5,
+)
 # Observers, a disc fleet and world-axis rays: the role sign, teammate order and the
 # holonomic layout (no heading block).
 MIXED = dict(n_agents=3, n_pushers=1, obs_level=1, frame_stack=3, world_size=0.5)
@@ -118,8 +126,9 @@ def _build(builders, snap, envs) -> np.ndarray:
 @pytest.mark.parametrize("fused", [True, False], ids=["fused", "torch"])
 @pytest.mark.parametrize(
     "kw",
-    [U_H1, LIMO, MIXED, dict(REAL, lidar_fov=4.18879), dict(REAL, lidar_fov=4.18879, lidar_fov_at_mount=True)],
-    ids=["u_h1", "limo", "mixed", "real_fov240", "real_fov240_mount"],
+    [U_H1, LIMO, MIXED, dict(REAL, lidar_fov=4.18879), dict(REAL, lidar_fov=4.18879, lidar_fov_at_mount=True),
+     SPAN240],
+    ids=["u_h1", "limo", "mixed", "real_fov240", "real_fov240_mount", "span240_open"],
 )
 def test_obs_matches_swarp(kw, fused):
     torch = pytest.importorskip("torch")
@@ -332,17 +341,18 @@ def _swarp_scan(snap, scen, e: int, a: int, fov: float, at_mount: bool) -> dict:
 
 
 @pytest.mark.parametrize(
-    "fov,at_mount",
-    [(2.0 * math.pi, False), (4.18879, False), (4.18879, True)],
-    ids=["fov360", "fov240_per_ray", "fov240_at_mount"],
+    "fov,at_mount,base",
+    [(2.0 * math.pi, False, REAL), (4.18879, False, REAL), (4.18879, True, REAL),
+     (4.18879, True, SPAN240)],
+    ids=["fov360", "fov240_per_ray", "fov240_at_mount", "span240_open"],
 )
-def test_sensor_matches_swarp(fov, at_mount):
+def test_sensor_matches_swarp(fov, at_mount, base):
     """End to end on the real-Limo sensor model: from swarp's own states, a synthetic mount
     scan through scan_to_rays, label_rays and the field-of-view rule gives the rays and
     classes swarp's lidar gives (min range 0.02 m from the mount, FOV per centre ray or cut
     at the mount). Rays whose class differs graze a corner; they stay rare."""
     torch = pytest.importorskip("torch")
-    kw = dict(REAL, lidar_fov=fov)
+    kw = dict(base, lidar_fov=fov)
     if at_mount:
         kw["lidar_fov_at_mount"] = True
     n_envs = 8
@@ -364,14 +374,17 @@ def test_sensor_matches_swarp(fov, at_mount):
                         sc["ranges"], sc["angle_min"], sc["angle_increment"],
                         max(sc["range_min"], cfg.lidar_min_range), sc["range_max"], (0.103, 0.0), 0.0,
                         cfg.n_rays, cfg.max_range, pose=me, own_half=cfg.half_extents,
+                        span=cfg.lidar_span,
                     )
                     mates = [j for j in range(cfg.n_agents) if j != a]
                     r, cls = label_rays(
-                        rays, me, cfg.max_range, cfg.world_size, snap["pos"][e, mates],
+                        rays, me, cfg.max_range, cfg.label_bound, snap["pos"][e, mates],
                         snap["theta"][e, mates], mate_half=cfg.half_extents,
+                        span=cfg.lidar_span,
                     )
                     if not at_mount:
-                        r, cls = blank_outside_fov(r, cls, fov, cfg.max_range)
+                        r, cls = blank_outside_fov(r, cls, fov, cfg.max_range,
+                                                   span=cfg.lidar_span)
                     ref_r, ref_c = snap["ranges"][e, a], snap["cls"][e, a]
                     total += cls.size
                     wrong += int((cls != ref_c).sum())
