@@ -54,6 +54,9 @@ class EpisodeManager(Node):
         self.stall_timeout = float(self.declare_parameter("stall_timeout", 60.0).value)
         world = self.declare_parameter("world", "pusht").value
         self.initialpose = bool(self.declare_parameter("initialpose", False).value)
+        # > 0: the episode fails as soon as the T centroid is past this on x or y (no T walls
+        # in Gazebo; swarp's recipes from L8 on terminate there too). 0: run to the timeout.
+        self.tee_out_of_bounds = float(self.declare_parameter("tee_out_of_bounds", 0.0).value)
         self.localize_tol = float(self.declare_parameter("localize_tol", 0.03).value)
         self.localize_timeout = float(self.declare_parameter("localize_timeout", 5.0).value)
         if not ckpt:
@@ -230,7 +233,7 @@ class EpisodeManager(Node):
         wall0 = time.monotonic()
 
         # Score at the control rate, like swarp's done after each step.
-        k, success = 0, False
+        k, success, end = 0, False, "timeout"
         min_pos = math.inf
         pos_err = ang_err = math.nan
         horizon = t.max_steps * t.dt
@@ -241,14 +244,18 @@ class EpisodeManager(Node):
             pos_err, ang_err = self.tee_error(goal)
             min_pos = min(min_pos, pos_err)
             if pos_err < t.goal_tolerance and ang_err < t.angle_tolerance:
-                success = True
+                success, end = True, "solved"
+                break
+            _, tx, ty, _ = self.pose["tee"]
+            if self.tee_out_of_bounds > 0 and max(abs(tx), abs(ty)) > self.tee_out_of_bounds:
+                end = "out_of_bounds"
                 break
             if k >= t.max_steps:
                 break
         self.set_episode(-1)
         elapsed = min(k * t.dt, horizon)
         row = {
-            "seed": self.seed, "episode": ep, "success": int(success), "time": round(elapsed, 3),
+            "seed": self.seed, "episode": ep, "success": int(success), "end": end, "time": round(elapsed, 3),
             "steps": k, "final_pos_err": round(pos_err, 4), "final_ang_err": round(ang_err, 4),
             "min_pos_err": round(min_pos, 4), "rejected_draws": rejected,
             "wall_s": round(time.monotonic() - wall0, 2),

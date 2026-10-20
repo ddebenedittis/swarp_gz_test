@@ -91,6 +91,7 @@ src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/<run>/<ckpt>.pt <shard
 
 `eval.launch.py` reads the robot count and the T geometry from the checkpoint, starts the sim, one `policy_node` per robot and the `episode_manager`, and exits after the last episode.
 The manager draws initial states like swarp's reset at full difficulty (seeded), teleports the bodies, publishes `/goal` (PoseStamped) and `/episode` (Int32 id, `-1` = stopped), and scores success exactly as swarp (`|p - g| < goal_tolerance` and `|Δθ| < angle_tolerance`, checked every `dt`, timeout `max_steps·dt`).
+With `tee_out_of_bounds:=<m>` an episode also ends, as a failure (`end` = `out_of_bounds`), once the T centroid is past that `|x|` or `|y|` (Gazebo has no T walls).
 Each episode is a row of `out/<run name>/episodes.csv`; with `record:=true`, `rec/ep<id>_robot_<i>.npz` holds every step's obs, action, raw scan, poses and T pose.
 
 `pose_source:=amcl` adds the landmarks, one nav2 AMCL per robot on the map `pusht_gz/maps/landmarks.yaml` (rasterized from the same geometry, `ros2 run pusht_gz make_map <dir>`), re-initialised at the true pose after every teleport; `pose_source:=mocap` turns ground truth into `/rigid_bodies` (`fake_mocap`) for the real `mocap_relay`.
