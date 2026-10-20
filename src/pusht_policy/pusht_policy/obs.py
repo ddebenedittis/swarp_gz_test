@@ -76,6 +76,7 @@ class ObsConfig:
     agent_half_extents: tuple[float, float] | None = None  # None: (r, r / 2) for a box
     lidar_body_frame: bool | None = None  # None: whenever the heading matters
     lidar_min_range: float = 0.0  # from the lidar origin; returns closer than this are misses
+    lidar_fov_at_mount: bool = False  # the field of view is cut at the mount, not per centre ray
 
     def __post_init__(self) -> None:
         if self.obs_level != 1:
@@ -430,6 +431,22 @@ def label_rays(
 FOV_EPS = 1e-4
 
 
+def crop_fov_at_mount(
+    ranges: Sequence[float], angle_min: float, angle_increment: float, fov: float, mount_yaw: float = 0.0
+) -> np.ndarray:
+    """swarp's ``lidar_fov_at_mount`` field of view on a raw scan: every return whose bearing
+    from the mount, off the heading, exceeds ``fov / 2 + FOV_EPS`` becomes a no-return (inf).
+    A sensor cropped (or occluded) at ``fov`` already looks like this; checkpoints trained with
+    the cut at the mount need nothing else, those trained per centre ray use
+    :func:`blank_outside_fov` instead."""
+    r = np.asarray(ranges, dtype=np.float64).copy()
+    if fov >= 2.0 * math.pi:
+        return r
+    ang = angle_min + np.arange(r.size) * angle_increment + mount_yaw
+    r[np.abs(np.arctan2(np.sin(ang), np.cos(ang))) > 0.5 * fov + FOV_EPS] = np.inf
+    return r
+
+
 def blank_outside_fov(
     ranges: np.ndarray, hit_class: np.ndarray, fov: float, max_range: float
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -460,6 +477,7 @@ __all__ = [
     "ObsConfig",
     "label_rays",
     "blank_outside_fov",
+    "crop_fov_at_mount",
     "ray_angles",
     "scan_points",
     "scan_to_rays",

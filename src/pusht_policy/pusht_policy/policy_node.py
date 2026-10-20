@@ -48,6 +48,7 @@ from pusht_policy.obs import (
     ObsBuilder,
     ObsConfig,
     blank_outside_fov,
+    crop_fov_at_mount,
     label_rays,
     scan_to_rays,
 )
@@ -188,7 +189,8 @@ class PolicyNode(Node):
                 f"lidar_mount_x {self.mount_x} m differs from the checkpoint's lidar_mount_offset {mount} m")
         self.get_logger().info(
             f"lidar: min range {self.cfg.lidar_min_range} m from the mount (checkpoint), field of view "
-            f"{math.degrees(self.lidar_fov):.0f} deg (trained >= {math.degrees(fov_min):.0f} deg), mount {self.mount_x} m")
+            f"{math.degrees(self.lidar_fov):.0f} deg (trained >= {math.degrees(fov_min):.0f} deg, cut "
+            f"{'at the mount' if self.cfg.lidar_fov_at_mount else 'per centre ray'}), mount {self.mount_x} m")
 
     # ------------------------------------------------------------------ inputs
 
@@ -262,8 +264,12 @@ class PolicyNode(Node):
         pos, vel, theta = state
         a, cfg = self.agent, self.cfg
         me = (pos[a, 0], pos[a, 1], theta[a])
+        # The field of view as the checkpoint was trained: cut at the mount (on the raw
+        # scan), or per centre ray (after binning).
+        raw = (crop_fov_at_mount(scan.ranges, scan.angle_min, scan.angle_increment, self.lidar_fov)
+               if cfg.lidar_fov_at_mount else scan.ranges)
         rays, _ = scan_to_rays(
-            scan.ranges, scan.angle_min, scan.angle_increment,
+            raw, scan.angle_min, scan.angle_increment,
             max(scan.range_min, cfg.lidar_min_range), scan.range_max,
             (self.mount_x, 0.0), 0.0, cfg.n_rays, cfg.max_range,
             pose=me, own_half=cfg.half_extents if cfg.agent_shape == "box" else None,
@@ -276,7 +282,8 @@ class PolicyNode(Node):
             mate_radius=None if box else cfg.agent_radius,
             body_frame=cfg.body_frame,
         )
-        ranges, cls = blank_outside_fov(ranges, cls, self.lidar_fov, cfg.max_range)
+        if not cfg.lidar_fov_at_mount:
+            ranges, cls = blank_outside_fov(ranges, cls, self.lidar_fov, cfg.max_range)
         gx, gy, gth = self.goal
         obs = self.builder.build(pos, vel, theta, self.roles, np.array([gx, gy]), gth, ranges, cls)
         act = self._act(torch.from_numpy(obs)[None])

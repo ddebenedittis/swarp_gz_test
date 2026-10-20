@@ -153,9 +153,15 @@ Ground-truth poses, seeds 0–1, 20 episodes each:
 | L6 | sampled | cropped to 240° | 240° | 0/20 | 5 / 1 / 14 |
 | L5s | greedy | cropped to 240° | 240° | 1/20 = 0.050 | 7 / 2 / 10 |
 | L6 | greedy | full | 240° | 11/20 = 0.550 | 3 / 1 / 5 |
+| L6 | sampled | full | 240° | 15/20 = 0.750 | 4 / 0 / 1 |
 
 Against analytic centre rays on the recorded true poses, 16% of the T-hit rays in the policy's frames are wrong with the crop, nearly all at k = ±9, ±10 (k = 10: 7680 of 8419), against 1.5% without it.
 `eval.launch.py sim_lidar_fov:=` crops the gz lidar independently of the policy's `lidar_fov`.
+
+The deployment pipeline itself is at parity: `test_obs_parity.py` checks the obs assembly on L6's configuration (240° per centre ray and cut at the mount) bit for bit, and `test_sensor_matches_swarp` feeds synthetic 400-sample mount scans of swarp's own states through `scan_to_rays`, `label_rays` and the field-of-view rule (61, 19 and 7 of 12800 ray classes differ at 360°, 240° per ray and 240° at the mount; p99 range error below 3.4 mm).
+L6's checkpoint differs from L5s only in sensor and noise kwargs (obs_dim, roles, action bounds, dt, frame stack unchanged).
+swarp's `lidar_fov_at_mount` (8aaa57d) cuts the field of view at the mount as the sensor does; `policy_node` reads it from the checkpoint and then crops the raw scan (`obs.crop_fov_at_mount`) instead of blanking centre rays.
+The 20 initial states with every run's outcome, for paired swarp runs: `out/L6_paired_states.csv` (`scripts/paired_states.py`).
 
 ```bash
 src/pusht_policy/scripts/eval_shards.bash /opt/swarp/runs/remote-davide-cf/L5s-wheelstall-limo-s0-fromL5r/pusht_lidar_limo_dr_wheel_best.pt 2 10 L5s_gt_landmarks 0 landmarks:=true record:=true
