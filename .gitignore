@@ -1,8 +1,30 @@
+# colcon
 build/
 install/
 log/
+
+# eval outputs (episodes, recordings, videos)
 out/
+rec/
+*.mp4
+*.npz
+*.npy
+
+# checkpoints
+*.pt
+*.pth
+*.ckpt
+
+# crash dumps
+core
+core.[0-9]*
+
+# python
 __pycache__/
 *.pyc
 .pytest_cache/
+*.egg-info/
+.venv/
+
+# docker
 docker/.env
