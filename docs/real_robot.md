@@ -80,7 +80,7 @@ On the laptop: `docker/build.bash`, then `docker/run.bash` and `colcon build --s
 
 ## Checklist
 
-Every command below except the robot ones runs in the laptop container; `<ck>` is the checkpoint, e.g. `/opt/swarp/runs/remote-davide-cf/L5s-wheelstall-limo-s0-fromL5r/pusht_lidar_limo_dr_wheel_best.pt`.
+Every command below except the robot ones runs in the laptop container; `<ck>` is the checkpoint, e.g. `/opt/swarp/runs/remote-davide-cf/L8b-s2-slim240-s0/pusht_lidar_limo_slim240_s2_best.pt` (L8b, recipe `pusht_lidar_limo_slim240_s2`: the slim T, 43 rays over ±120°, open arena; `/opt/swarp` on the `swarp` branch `pusht-lidar-limo`).
 
 ### 0. Before anything moves
 
@@ -101,9 +101,11 @@ Keep the numbers: they go to the recipe author (FOV, pose noise, latency) and in
 2. **Static lidar scan** (robot in open space, one narrow object 1 m straight ahead): `ros2 run limo_real measure_lidar_static --ros-args -p robot:=robot_i`.
    It reports the self-return and blind sectors, the unobstructed field of view `fov_rad`, and the object's bearing `probe_bearing_deg`.
    If the bearing is not ~0, restart the robot with `scan_yaw_offset:=<minus the bearing, in rad>` and repeat.
-   Use `fov_rad` (the smallest over the robots) as `lidar_fov` everywhere below and send it to the recipe author; `policy_node` refuses a `lidar_fov` below the checkpoint's narrowest trained one (240° for L6) unless `allow_fov_below_trained`.
-   This FOV is measured from the mount, while swarp's `lidar_fov` (through L6) blanks the robot-centre rays: a physical 240° hides a T against the robot's side that a 240° policy expects to see, which in Gazebo takes L6 from 11/20 (full scan, policy blanking at 240°) to 1/20 (lidar cropped to 240°; `docs/results.md`); until the recipe blanks by the bearing from the mount, a robot needs about 290° at the mount to serve a 240° policy.
-   Repeat with `-p checkpoint:=<ck>`: `policy_rays_hit` lists the policy's binned rays that read a hit in open space; it must be empty, or the robot sees its own wheels or mount as obstacles (the checkpoint's minimum range is 0.02 m for L6, so returns within 2 cm of the lidar are all that is dropped besides the footprint).
+   Use `fov_rad` (the smallest over the robots) as `lidar_fov` everywhere below and send it to the recipe author; `policy_node` refuses a `lidar_fov` below the checkpoint's narrowest trained one (240° for L8b, trained at that fixed field of view) unless `allow_fov_below_trained`.
+   For a checkpoint trained at a fixed field of view, such as L8b, pass that one instead (`lidar_fov:=4.18879`) as long as `fov_rad` is at least as wide: `policy_node` cuts the raw scan to `lidar_fov` at the mount, so a wider sensor is cropped to what the policy saw in training.
+   This FOV is measured from the mount, as checkpoints trained with `lidar_fov_at_mount` (L7 on, the checkpoint says which) cut it: for those a measured 240° serves a 240° policy.
+   Older checkpoints (through L6) blank by the bearing from the robot's centre instead, so a physical 240° hides a T against the robot's side that they expect to see (in Gazebo L6 went from 11/20 to 1/20, `docs/results.md`), and they need about 290° at the mount to serve a 240° policy.
+   Repeat with `-p checkpoint:=<ck>`: `policy_rays_hit` lists the policy's binned rays that read a hit in open space; it must be empty, or the robot sees its own wheels or mount as obstacles (the checkpoint's minimum range is 0.02 m for L6 and L8b, so returns within 2 cm of the lidar are all that is dropped besides the footprint).
 3. **Lidar rate and latency**: `ros2 run limo_real measure_lidar_rate --ros-args -p robot:=robot_i`.
    Expect ~10 Hz, few gaps, and `receive_minus_stamp_s.mean` of a few ms; a large or negative value means the clocks are not synchronised (fix chrony before going on).
 4. **Step response** (bridge running normally, ~1.5 m free ahead, mocap on): restart the robot side without `dry_run`, then `ros2 run limo_real measure_step_response --ros-args -p robot:=robot_i`.
