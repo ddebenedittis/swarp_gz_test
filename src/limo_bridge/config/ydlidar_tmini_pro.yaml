@@ -1,7 +1,8 @@
-# EAI / YDLIDAR T-mini Pro on the Limo (ydlidar_ros2_driver), full circle at 10 Hz.
-# From YDLIDAR's params/TminiPro.yaml; AgileX's limo_bringup crops angle_min/max to +-90,
-# the policy needs the full circle (the rear sector the chassis hides is blanked later).
-# Check the scan's 0 deg against the robot's heading with limo_real's measure_lidar_static.
+# EAI / YDLIDAR T-mini Pro on the Limo (ydlidar_ros2_driver), 10 Hz, the same on every robot.
+# From AgileX's params/TminiPro.yaml (reversion false: YDLIDAR's own profile sets it true, which
+# turns the scan by 180 deg on the Limos). angle_min/angle_max: the sector the robot's own
+# mount leaves clear on both lab Limos (measure_lidar_static, 2026-10-22: lm2935 -116..+108,
+# lm2591 -116..+129 with nothing between +8 and +92), the same on every robot.
 /**:
   ros__parameters:
     port: /dev/ydlidar
@@ -14,14 +15,14 @@
     intensity_bit: 8
     abnormal_check_count: 4
     fixed_resolution: true
-    reversion: true
+    reversion: false
     inverted: true
     auto_reconnect: true
     isSingleChannel: false
     intensity: true
     support_motor_dtr: false
-    angle_max: 180.0
-    angle_min: -180.0
+    angle_max: 108.0
+    angle_min: -116.0
     range_max: 12.0
     range_min: 0.02
     frequency: 10.0

@@ -45,6 +45,7 @@ ARGS = {
     "laser_xyz": ("0.103,0.0,0.116", "lidar origin from base_footprint [m]"),
     "amcl": ("false", "run AMCL onboard"),
     "map": ("", "map yaml for amcl (arena frame)"),
+    "amcl_params": ("", "amcl params yaml; default limo_bridge/config/amcl.yaml"),
     "x": ("0.0", "AMCL initial x"),
     "y": ("0.0", "AMCL initial y"),
     "yaw": ("0.0", "AMCL initial yaw"),
@@ -67,8 +68,11 @@ def _setup(context):
             parameters=[{"port_name": a["port_name"], "odom_frame": f"{robot}/odom",
                          "base_frame": f"{robot}/base_footprint", "pub_odom_tf": False,
                          "use_mcnamu": False}],
-            remappings=[("/cmd_vel", f"{limo}/cmd_vel"), ("/odom", f"{limo}/odom"), ("/imu", f"/{robot}/imu"),
-                        ("/limo_status", f"/{robot}/limo_status"), ("/tf", f"{limo}/tf")],
+            # AgileX's limo_base versions disagree on absolute vs relative names (cmd_vel and odom
+            # are relative on the Limo Pro's Foxy build): remap both forms, or a relative cmd_vel
+            # lands on /<robot>/cmd_vel, the policy's ungated output.
+            remappings=[(n, f"{limo}/{t}") for t in ("cmd_vel", "odom", "tf") for n in (t, f"/{t}")]
+            + [(n, f"/{robot}/{t}") for t in ("imu", "limo_status") for n in (t, f"/{t}")],
             output="screen",
         ))
     if _true(a["lidar"]):
@@ -77,7 +81,7 @@ def _setup(context):
             name="ydlidar_ros2_driver_node", namespace=robot,
             parameters=[a["lidar_params"] or os.path.join(share, "config", "ydlidar_tmini_pro.yaml"),
                         {"port": a["lidar_port"], "frame_id": f"{robot}/laser_link"}],
-            remappings=[("scan", f"{limo}/scan")],
+            remappings=[("scan", f"{limo}/scan"), ("/scan", f"{limo}/scan")],
             output="screen",
         ))
     actions.append(Node(
@@ -103,8 +107,8 @@ def _setup(context):
     if _true(a["amcl"]):
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(share, "launch", "amcl.launch.py")),
-            launch_arguments={"robot_name": robot, "map": a["map"], "x": a["x"], "y": a["y"],
-                              "yaw": a["yaw"]}.items(),
+            launch_arguments={"robot_name": robot, "map": a["map"], "params": a["amcl_params"], "x": a["x"],
+                              "y": a["y"], "yaw": a["yaw"]}.items(),
         ))
     return actions
 
