@@ -1,0 +1,47 @@
+# ROS 2 Humble (Ubuntu 22.04, Python 3.10) for the laptop side of the REAL Limos only: the
+# policies, the pose relays, the operator and RViz, without Gazebo.
+# The robots' 2023 Humble Fast DDS and Foxy cannot parse Jazzy's discovery data (rmw_dds_common's
+# GID shrank from 24 to 16 bytes): every robot process aborts or segfaults as soon as a Jazzy
+# participant joins the domain. Humble on the laptop speaks their format.
+#
+#   docker build -f docker/Dockerfile.humble -t swarp_real_humble docker
+#   (the workspace is built into build_humble/ and install_humble/, next to Jazzy's)
+FROM osrf/ros:humble-desktop
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-colcon-common-extensions \
+    python3-pip \
+    python3-pil \
+    python3-scipy \
+    python3-venv \
+    python3-yaml \
+    ros-humble-nav2-amcl \
+    ros-humble-nav2-lifecycle-manager \
+    ros-humble-nav2-map-server \
+    ros-humble-slam-toolbox \
+    ros-humble-tf2-ros \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv --system-site-packages ${VIRTUAL_ENV} \
+ && ${VIRTUAL_ENV}/bin/pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+ && ${VIRTUAL_ENV}/bin/pip install --no-cache-dir "warp-lang>=1.15" "numpy>=1.26,<2"
+ENV PATH=${VIRTUAL_ENV}/bin:${PATH}
+ENV PYTHONPATH=${VIRTUAL_ENV}/lib/python3.10/site-packages:/opt/swarp
+
+# Fast DDS over UDPv4 only: Foxy's Cyclone 0.7 segfaults on shared-memory locators.
+COPY fastdds_udp.xml /etc/fastdds_udp.xml
+ENV FASTRTPS_DEFAULT_PROFILES_FILE=/etc/fastdds_udp.xml
+
+ARG USERNAME=ros
+ARG UID=1000
+ARG GID=1000
+RUN if id -u ${UID} >/dev/null 2>&1; then userdel -r "$(id -nu ${UID})"; fi \
+ && if getent group ${GID} >/dev/null; then groupdel "$(getent group ${GID} | cut -d: -f1)"; fi \
+ && groupadd -g ${GID} ${USERNAME} \
+ && useradd -m -s /bin/bash -u ${UID} -g ${GID} -G sudo,video ${USERNAME}
+USER ${USERNAME}
+ENV HOME=/home/${USERNAME}
+WORKDIR /home/${USERNAME}
+CMD ["bash"]

@@ -2,6 +2,8 @@
 build/
 install/
 log/
+build_humble/
+install_humble/
 
 # eval outputs (episodes, recordings, videos)
 out/

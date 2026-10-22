@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fast DDS over UDPv4 only (no shared-memory locators): Foxy's Cyclone DDS 0.7 on the Limo Pro
+     segfaults on peers that announce them. FASTRTPS_DEFAULT_PROFILES_FILE in the Humble container. -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>udp</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="udp_only" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>
