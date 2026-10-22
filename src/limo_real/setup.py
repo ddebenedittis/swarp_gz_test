@@ -26,6 +26,7 @@ setup(
             "amcl_relay = limo_real.amcl_relay:main",
             "fake_mocap = limo_real.fake_mocap:main",
             "operator = limo_real.operator:main",
+            "viz = limo_real.viz:main",
             "pose_error = limo_real.pose_error:main",
             "pose_error_merge = limo_real.pose_error:merge_main",
             "measure_cmd_timeout = limo_real.measure.cmd_timeout:main",

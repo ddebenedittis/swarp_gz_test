@@ -2,7 +2,7 @@
 node per robot. The operator console runs in its own terminal (``ros2 run limo_real operator``).
 
     ros2 launch limo_real laptop.launch.py checkpoint:=/opt/swarp/runs/<run>/<ckpt>.pt pose_source:=mocap \
-        lidar_fov:=<measured> [record:=true] [compare:=true map:=...]
+        lidar_fov:=<measured> [record:=true] [compare:=true map:=...] [rviz:=true]
 
 Each robot runs ``limo_bridge robot.launch.py``; the policies publish ``/robot_i/cmd_vel``
 into its bridge. Stopping this launch (Ctrl-C) makes every policy publish a zero twist;
@@ -36,6 +36,7 @@ ARGS = {
     "map_to_arena": ("0,0,0", "map origin x,y,yaw in the arena frame"),
     "initial_poses": ("", "'x,y,yaw;...' AMCL initial poses when AMCL runs here"),
     "compare": ("false", "with mocap: also relay AMCL to /robot_i/amcl/pose and log its error"),
+    "rviz": ("false", "RViz (config/real.rviz) and its markers (viz)"),
 }
 
 
@@ -70,7 +71,14 @@ def _setup(context):
         )
         for i in range(1, n + 1)
     ]
-    return [poses, *policies]
+    viz = []
+    if a["rviz"].lower() in ("1", "true", "yes"):
+        viz = [
+            Node(package="limo_real", executable="viz", parameters=[{"checkpoint": ckpt}], output="screen"),
+            Node(package="rviz2", executable="rviz2", output="log", arguments=[
+                "-d", os.path.join(get_package_share_directory("limo_real"), "config", "real.rviz")]),
+        ]
+    return [poses, *policies, *viz]
 
 
 def generate_launch_description():

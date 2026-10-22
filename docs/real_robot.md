@@ -23,6 +23,8 @@ Do not skip ahead: every stage checks an assumption the next one relies on.
 - `robot_bridge` clamps the policy's command to the trained `|v| ≤ 0.4 m/s`, `|ω| ≤ 1.5 rad/s`, and publishes zeros to the chassis at 20 Hz whenever no command arrived for 0.3 s, `/estop` is true, or (arena stop on) its `/robot_i/pose` is older than 0.5 s; past the arena edge plus 0.25 m it zeroes outward motion.
 - `dry_run:=true` (shadow mode) never sends anything to the chassis; the gated command still goes to `/robot_i/cmd_vel_gated`.
 - `limo_real` (laptop): the pose sources (`mocap_relay`, `amcl_relay`), `laptop.launch.py` (pose source and policies), the `operator` console (goal, start/stop, e-stop, scoring), `pose_error`, and the measurement scripts.
+- `laptop.launch.py rviz:=true` opens RViz (`limo_real/config/real.rviz`, fixed frame `map`): the map, both scans, each robot's footprint on its localized TF frame, AMCL's pose with its covariance ellipse, the goal T with its tolerance circle, and the arena square (`amcl_relay` puts `arena` on TF under `map`).
+- The goal T in RViz can be dragged (Interact tool, `goal (drag)` display): move it in the plane, turn it by its ring; on release `viz` sends it on `/goal_request` and the operator console applies it, also mid-episode (the policies follow it at once; the change goes in the episode's `events`, and `goal` in `episodes.csv` is the last one).
 - Gazebo runs the same `robot_bridge` between the policies and the DiffDrive (`sim.launch.py safety_bridge:=true`, the default), so the sim stops the robots the way the real stack does.
 
 ### What stops the robots

@@ -6,6 +6,7 @@ Type commands at the ``push-t>`` prompt:
 
     goal X Y YAW_DEG     set the goal (arena frame), latched on /goal
     goal mocap           take the goal from the mocap body goal_marker (/goal_marker/pose)
+                         (or drag the goal T in RViz, also mid-episode: ``viz`` sends it on /goal_request)
     start                start an episode: /episode = next id (the policies drive)
     stop [ok|fail]       end it (/episode = -1); ok/fail scores it by hand (no T tracking)
     estop | release      latch / release /estop (every robot_bridge zeroes its chassis)
@@ -77,6 +78,7 @@ class Operator(Node):
         for r in self.robots:
             self.create_subscription(String, f"/{r}/bridge_state", lambda m, r=r: self._on_gate(r, m), LATCHED)
         self.goal_pub = self.create_publisher(PoseStamped, "/goal", LATCHED)
+        self.create_subscription(PoseStamped, "/goal_request", self._on_goal_request, 10)
         self.episode_pub = self.create_publisher(Int32, "/episode", LATCHED)
         self.estop_pub = self.create_publisher(Bool, "/estop", LATCHED)
 
@@ -103,6 +105,20 @@ class Operator(Node):
             self.gates[r] = m.data
             if self.episode >= 0 and not m.data.endswith("ok"):
                 self.events.append(f"{r}:{m.data}@{time.monotonic() - self.t0:.1f}")
+
+    def _on_goal_request(self, m: PoseStamped) -> None:
+        """A goal dragged in RViz, applied even mid-episode (logged in the episode's events)."""
+        x, y, yaw = m.pose.position.x, m.pose.position.y, yaw_of(m.pose.orientation)
+        with self.lock:
+            if m.header.frame_id not in ("", self.frame_id):
+                print(f"\ngoal request in frame {m.header.frame_id!r}, not {self.frame_id!r}: ignored", flush=True)
+                if self.goal is not None:
+                    self.set_goal(*self.goal)  # snap the marker back
+                return
+            self.set_goal(x, y, yaw)
+            if self.episode >= 0:
+                self.events.append(f"goal:{x:.3f},{y:.3f},{math.degrees(self.goal[2]):.0f}@{time.monotonic() - self.t0:.1f}")
+        print(f"\ngoal {self.goal} (from RViz)", flush=True)
 
     def fresh(self, b: str, age: float = 0.5):
         p = self.poses.get(b)
