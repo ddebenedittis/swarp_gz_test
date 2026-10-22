@@ -17,12 +17,14 @@ built in another frame, ``map_to_arena`` is the map origin's ``x, y, yaw`` in th
 
 from __future__ import annotations
 
+import math
+
 import rclpy
-from geometry_msgs.msg import PoseStamped, TwistStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped, TwistStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.time import Time
-from tf2_ros import Buffer, TransformException, TransformListener
+from tf2_ros import Buffer, StaticTransformBroadcaster, TransformException, TransformListener
 
 from limo_real.frames import compose, pose_msg, rotate, vel_msg, yaw_of
 
@@ -38,11 +40,24 @@ class AmclRelay(Node):
         out, out_vel = p("out", "pose").value, p("out_vel", "vel").value
         self.tf = Buffer()
         self.listener = TransformListener(self.tf, self)
+        self.static_tf = StaticTransformBroadcaster(self)
+        self.static_tf.sendTransform(self._arena_tf())
         for r in robots:
             pubs = (self.create_publisher(PoseStamped, f"/{r}/{out}", 10),
                     self.create_publisher(TwistStamped, f"/{r}/{out_vel}", 10))
             self.create_subscription(Odometry, f"/{r}/odom", lambda m, r=r, pubs=pubs: self._on_odom(r, m, pubs), 20)
         self.get_logger().info(f"AMCL ({self.map_frame}) + odometry of {robots} -> /<robot>/{out}, /<robot>/{out_vel}")
+
+    def _arena_tf(self) -> TransformStamped:
+        """The arena's pose in the map frame: the inverse of ``map_to_arena``."""
+        x, y, yaw = self.to_arena
+        c, s = math.cos(yaw), math.sin(yaw)
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id, t.child_frame_id = self.map_frame, self.frame_id
+        t.transform.translation.x, t.transform.translation.y = -c * x - s * y, s * x - c * y
+        t.transform.rotation.z, t.transform.rotation.w = math.sin(-yaw / 2), math.cos(-yaw / 2)
+        return t
 
     def _on_odom(self, robot: str, m: Odometry, pubs) -> None:
         odom_frame = m.header.frame_id or f"{robot}/odom"
