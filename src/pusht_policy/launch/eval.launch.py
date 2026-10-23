@@ -45,6 +45,7 @@ ARGS = {
     "landmarks": ("auto", "walls and boxes outside the arena; auto: with pose_source:=amcl"),
     "lidar_fov": ("6.283185307179586", "lidar field of view [rad]: gz sensor crop and the policy's blanking"),
     "sim_lidar_fov": ("", "the gz lidar's own field of view [rad]; default lidar_fov"),
+    "arena_half": ("0", "arena half side [m] for a checkpoint trained on varying arenas; 0: 2.0"),
     "tee_out_of_bounds": ("0", "fail an episode once the T centroid is past this |x| or |y| [m]; 0: off"),
     "allow_fov_below_trained": ("false", "run a policy at a lidar_fov narrower than it was trained on"),
     "lidar_noise_stddev": ("0.015", "lidar range noise [m]"),
@@ -66,7 +67,8 @@ def _setup(context):
     ckpt = os.path.abspath(a["checkpoint"])
     if not os.path.isfile(ckpt):
         raise FileNotFoundError(f"checkpoint:={a['checkpoint']!r} is not a file")
-    task = Task.from_checkpoint(ckpt)
+    task = Task.from_checkpoint(ckpt, float(a["arena_half"]))
+    arena = task.arena_half[0]
     run_name = a["run_name"] or f"{os.path.splitext(os.path.basename(ckpt))[0]}_s{a['seed']}"
     run_dir = os.path.join(a["out_dir"], run_name)
     record = a["record"].lower() in ("1", "true", "yes")
@@ -83,7 +85,8 @@ def _setup(context):
             "n_robots": str(task.n_agents),
             "headless": a["headless"],
             "rtf": a["rtf"],
-            "arena_half": str(task.world_size),
+            "arena_half": str(arena),
+            "arena_stop": str(arena),
             "tee_bar_len": str(task.bar_len),
             "tee_bar_width": str(task.bar_width),
             "tee_stem_len": str(task.stem_len),
@@ -112,6 +115,7 @@ def _setup(context):
                 # Distinct per robot and per shard seed.
                 "sample_seed": 1000 * int(a["seed"]) + i,
                 "lidar_fov": float(a["lidar_fov"]),
+                "arena_half": arena,
                 "allow_fov_below_trained": a["allow_fov_below_trained"].lower() in ("1", "true", "yes"),
                 "use_sim_time": True,
             }],
@@ -130,6 +134,7 @@ def _setup(context):
             "run_name": run_name,
             "initialpose": src == "amcl",
             "tee_out_of_bounds": float(a["tee_out_of_bounds"]),
+            "arena_half": arena,
             "use_sim_time": True,
         }],
         output="screen",

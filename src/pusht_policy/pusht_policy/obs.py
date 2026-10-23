@@ -19,6 +19,7 @@ world frame unless noted)::
 
     pos (2) | vel (2) | role sign (1: +1 observer, -1 pusher) | goal - pos (2)
     | cos, sin goal heading (2) | cos, sin own heading (2, only when heading matters)
+    | arena half-extents W/2, H/2 (2, only for a checkpoint trained on ``arena_size``)
     | per teammate, ascending index, self skipped: pj - p (2), role sign (1)
     | F frames, oldest first, each [range / max_range (R) | T-hit mask (R) | robot-hit mask (R)]
 
@@ -47,6 +48,10 @@ ROLE_OBSERVER = 1
 
 #: ``PushTScenario`` defaults the obs depends on, for checkpoints that leave them implicit.
 _DEFAULT_AGENT_RADIUS = 0.025
+
+#: A per-env-arena checkpoint's arena half side [m] where a tool needs one and none is
+#: given: the 4 x 4 m every earlier Gazebo evaluation ran in.
+DEFAULT_ARENA_HALF = 2.0
 
 
 def _parse(raw: Any) -> Any:
@@ -81,6 +86,12 @@ class ObsConfig:
     lidar_span: float = 2.0 * math.pi  # the angle the rays span, centred on the heading
     open_arena: bool = False  # no walls: hits are labelled up to label_bound
     oob_margin: float | None = None  # the T fails its episode past world_size + this
+    # The trained arena sizes (swarp's ``arena_size``: a value, (lo, hi), or per axis
+    # (w_lo, w_hi, h_lo, h_hi), full extents in metres); None: the fixed square world_size.
+    arena_size: float | tuple[float, ...] | None = None
+    # The deployed arena's half-extents (x, y) [m]: observed, and the label bound per axis.
+    # Required with ``arena_size``, and within its trained range.
+    arena_half: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         if self.obs_level != 1:
@@ -94,6 +105,19 @@ class ObsConfig:
             raise ValueError(f"unknown model {self.model!r}")
         if self.agent_shape not in ("disc", "box"):
             raise ValueError(f"unknown agent_shape {self.agent_shape!r}")
+        if self.per_env_arena:
+            if self.arena_half is None:
+                raise ValueError(
+                    "this checkpoint observes the arena's size (it trained on arena_size "
+                    f"{self.arena_size}): pass the deployed arena's half-extents (arena_half)"
+                )
+            lo, hi = self.arena_half_range
+            for ax, h in enumerate(self.arena_half):
+                if not lo[ax] - 1e-6 <= h <= hi[ax] + 1e-6:
+                    raise ValueError(
+                        f"arena_half {tuple(self.arena_half)} is outside the trained half-extents "
+                        f"{lo[ax]}..{hi[ax]} m on axis {'xy'[ax]}: the policy never saw that arena"
+                    )
 
     # --- derived, with swarp's defaults
 
@@ -117,9 +141,31 @@ class ObsConfig:
         return (self.agent_radius, 0.5 * self.agent_radius)
 
     @property
-    def label_bound(self) -> float:
-        """How far out on either axis a hit still counts (swarp's ``label_bound``): the
-        out-of-bounds limit when there is one, else the arena (none in an open arena)."""
+    def per_env_arena(self) -> bool:
+        """Whether the checkpoint trained on varying arenas and observes the one it is in."""
+        return self.arena_size is not None
+
+    @property
+    def arena_half_range(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        """The trained half-extents, ``((x_lo, y_lo), (x_hi, y_hi))`` (swarp's
+        ``arena_ranges`` halved)."""
+        v = self.arena_size
+        if isinstance(v, (int, float)):
+            r = (float(v),) * 4
+        elif len(v) == 2:
+            r = (float(v[0]), float(v[1])) * 2
+        else:
+            r = tuple(float(x) for x in v)
+        return (0.5 * r[0], 0.5 * r[2]), (0.5 * r[1], 0.5 * r[3])
+
+    @property
+    def label_bound(self) -> float | tuple[float, float]:
+        """How far out a hit still counts (swarp's ``label_bound``): the out-of-bounds limit
+        when there is one, else the arena (none in an open arena). Per axis, ``(x, y)``, for a
+        per-env arena: the deployed arena's half-extents plus ``oob_margin``."""
+        if self.per_env_arena:
+            m = 0.0 if self.oob_margin is None else float(self.oob_margin)
+            return (self.arena_half[0] + m, self.arena_half[1] + m)
         if self.oob_margin is not None:
             return self.world_size + float(self.oob_margin)
         return math.inf if self.open_arena else self.world_size
@@ -130,7 +176,7 @@ class ObsConfig:
 
     @property
     def self_dim(self) -> int:
-        return 9 + (2 if self.heading_obs else 0)
+        return 9 + (2 if self.heading_obs else 0) + (2 if self.per_env_arena else 0)
 
     @property
     def obs_dim(self) -> int:
@@ -147,6 +193,9 @@ class ObsConfig:
         }
         if self.heading_obs:
             out["heading"] = slice(9, 11)
+        if self.per_env_arena:
+            k = 11 if self.heading_obs else 9
+            out["arena"] = slice(k, k + 2)
         k = self.self_dim
         out["teammates"] = slice(k, k + 3 * (self.n_agents - 1))
         k += 3 * (self.n_agents - 1)
@@ -156,18 +205,25 @@ class ObsConfig:
         return out
 
     @classmethod
-    def from_checkpoint(cls, meta: Mapping[str, Any]) -> ObsConfig:
+    def from_checkpoint(
+        cls, meta: Mapping[str, Any], arena_half: Sequence[float] | float | None = None
+    ) -> ObsConfig:
         """From the metadata dict ``swarp.rl.ppo.load_checkpoint`` returns (or the raw
         ``torch.load`` of the file). Checks the result against the stored ``obs_dim``.
 
         ``meta["scenario"]`` is the recipe name the run was trained with: ``pusht_lidar`` or
-        a variant of it such as ``pusht_lidar_limo``."""
+        a variant of it such as ``pusht_lidar_limo``. ``arena_half`` (a value for a square,
+        or ``(x, y)``) is the deployed arena, needed by a checkpoint trained on
+        ``arena_size`` and ignored by the others."""
         name = str(meta.get("scenario", "pusht_lidar"))
         if name != "pusht_lidar" and not name.startswith("pusht_lidar_"):
             raise ValueError(f"not a pusht_lidar checkpoint: {name!r}")
         kw = {k: _parse(v) for k, v in dict(meta.get("scen_kwargs", {})).items()}
-        names = cls.__dataclass_fields__.keys() - {"n_agents"}
+        names = cls.__dataclass_fields__.keys() - {"n_agents", "arena_half"}
         args = {k: kw[k] for k in names if k in kw}
+        if args.get("arena_size") is not None and arena_half is not None:
+            h = (arena_half,) * 2 if isinstance(arena_half, (int, float)) else tuple(arena_half)
+            args["arena_half"] = (float(h[0]), float(h[1]))
         if "n_pushers" not in args and "role_counts" in meta:
             args["n_pushers"] = int(meta["role_counts"][0])
         if args.get("agent_half_extents") is not None:
@@ -225,6 +281,8 @@ class ObsBuilder:
         feats = [p, vel[a], [sgn[a]], goal - p, [math.cos(goal_theta), math.sin(goal_theta)]]
         if cfg.heading_obs:
             feats.append([math.cos(theta[a]), math.sin(theta[a])])
+        if cfg.per_env_arena:
+            feats.append(cfg.arena_half)
         for j in self._others:
             feats.append([pos[j, 0] - p[0], pos[j, 1] - p[1], sgn[j]])
 
@@ -402,7 +460,7 @@ def label_rays(
     ray_ranges: np.ndarray,
     pose: Sequence[float],
     max_range: float,
-    world_size: float,
+    world_size: float | Sequence[float],
     mates_pos: np.ndarray,
     mates_theta: np.ndarray,
     mate_half: Sequence[float] | None = None,
@@ -415,10 +473,10 @@ def label_rays(
     """Classify each ray's hit point: ``(ranges, hit_class)``, both ``[n_rays]``.
 
     * no hit (``range >= max_range``), or a hit outside the square
-      ``|x| > world_size or |y| > world_size`` -> :data:`HIT_NONE` and ``max_range``:
-      swarp's walls are a position clamp, invisible to its lidar (pass
-      :attr:`ObsConfig.label_bound` as ``world_size``: in an open arena it reaches past
-      the walls, to where the T fails its episode);
+      ``|x| > world_size or |y| > world_size`` (or the rectangle, for a per-axis
+      ``(x, y)``) -> :data:`HIT_NONE` and ``max_range``: swarp's walls are a position
+      clamp, invisible to its lidar (pass :attr:`ObsConfig.label_bound` as ``world_size``:
+      in an open arena it reaches past the walls, to where the T fails its episode);
     * a hit inside a teammate's footprint grown by ``margin`` (an oriented box of
       ``mate_half``, or a disc of ``mate_radius``) -> :data:`HIT_AGENT`; this wins over the
       T, as swarp's ties go to agents;
@@ -445,7 +503,8 @@ def label_rays(
         else:
             inside = np.hypot(dx, dy) <= mate_radius + margin
         cls[inside] = HIT_AGENT
-    miss = (r >= max_range) | (np.abs(hx) > world_size) | (np.abs(hy) > world_size)
+    bx, by = (world_size, world_size) if np.ndim(world_size) == 0 else world_size
+    miss = (r >= max_range) | (np.abs(hx) > bx) | (np.abs(hy) > by)
     cls[miss] = HIT_NONE
     r[miss] = max_range
     return r, cls
@@ -493,6 +552,7 @@ def blank_outside_fov(
 
 
 __all__ = [
+    "DEFAULT_ARENA_HALF",
     "HIT_AGENT",
     "HIT_MOVABLE",
     "HIT_NONE",

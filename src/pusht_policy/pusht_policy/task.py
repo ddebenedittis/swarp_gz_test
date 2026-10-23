@@ -8,6 +8,8 @@ T radius, the agent bounding radius and every default match swarp by constructio
 at full difficulty (``goal_spawn_radius = goal_spawn_angle = None``), with one Gazebo-only
 addition: swarp lets spawns interpenetrate (its contacts push them apart), Gazebo's rigid
 contacts would launch them, so a draw whose footprints overlap is rejected and redrawn.
+The draw spans :attr:`Task.arena_half` per axis: ``world_size`` for a fixed-arena
+checkpoint, the deployed arena for one trained on ``arena_size``.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from pusht_policy.obs import ObsConfig, _parse
+from pusht_policy.obs import DEFAULT_ARENA_HALF, ObsConfig, _parse
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,7 @@ class Task:
     dt: float
     max_steps: int
     world_size: float
+    arena_half: tuple[float, float]  # the arena episodes are drawn in and scored against
     agent_half: tuple[float, float] | None  # box robots
     agent_radius: float  # swarp's bounding radius (circumscribed for a box)
     tee_half: tuple[tuple[float, float], ...]  # per box, T frame
@@ -41,14 +44,21 @@ class Task:
     angle_tolerance: float
 
     @classmethod
-    def from_meta(cls, meta: dict[str, Any]) -> Task:
+    def from_meta(cls, meta: dict[str, Any], arena_half: float | None = None) -> Task:
+        """``arena_half`` (a square's half side [m]) sets a per-env-arena checkpoint's
+        arena; it defaults to :data:`DEFAULT_ARENA_HALF` there and is ignored otherwise."""
         from swarp.scenarios.pusht_lidar import PushTLidarScenario
 
         kw = {k: _parse(v) for k, v in dict(meta.get("scen_kwargs", {})).items()}
         scen = PushTLidarScenario(n_agents=int(meta["n_agents"]), **kw)
         shape = scen.shape
-        cfg = ObsConfig.from_checkpoint(meta)
-        half = cfg.half_extents if cfg.agent_shape == "box" else None
+        if kw.get("arena_size") is not None:
+            h = DEFAULT_ARENA_HALF if arena_half is None or arena_half <= 0 else float(arena_half)
+            half = (h, h)
+        else:
+            half = (float(scen.world_size),) * 2
+        cfg = ObsConfig.from_checkpoint(meta, arena_half=half)
+        half_ext = cfg.half_extents if cfg.agent_shape == "box" else None
         bar, stem = shape.half[0], shape.half[1]
         return cls(
             scenario=str(meta.get("scenario")),
@@ -56,7 +66,8 @@ class Task:
             dt=float(meta["dt"]),
             max_steps=int(meta["max_steps"]),
             world_size=float(scen.world_size),
-            agent_half=half,
+            arena_half=cfg.arena_half or half,
+            agent_half=half_ext,
             agent_radius=float(scen.agent_radius),
             tee_half=tuple(tuple(map(float, h)) for h in shape.half),
             tee_off=tuple(tuple(map(float, o)) for o in shape.off),
@@ -67,10 +78,16 @@ class Task:
         )
 
     @classmethod
-    def from_checkpoint(cls, path: str) -> Task:
+    def from_checkpoint(cls, path: str, arena_half: float | None = None) -> Task:
         import torch
 
-        return cls.from_meta(torch.load(path, map_location="cpu", weights_only=True))
+        return cls.from_meta(torch.load(path, map_location="cpu", weights_only=True), arena_half)
+
+    @property
+    def per_env_arena(self) -> bool:
+        """Whether the arena is the deployment's choice rather than the checkpoint's."""
+        return self.arena_half != (self.world_size, self.world_size)
+
 
 
 # ------------------------------------------------------------------------ sampling
@@ -106,15 +123,16 @@ def tee_boxes(task: Task, x: float, y: float, yaw: float):
 
 def _swarp_draw(task: Task, rng: np.random.Generator) -> dict[str, Any]:
     """One draw of ``pusht_reset_kernel`` + ``pusht_heading_reset_kernel`` (full difficulty)."""
-    lim = task.world_size - 2.0 * task.agent_radius
-    tlim = task.world_size - task.tee_radius
+    hx, hy = task.arena_half
+    lx, ly = hx - 2.0 * task.agent_radius, hy - 2.0 * task.agent_radius
+    tx_lim, ty_lim = hx - task.tee_radius, hy - task.tee_radius
     clear = task.tee_radius + 2.0 * task.agent_radius
     u = lambda: rng.uniform(-1.0, 1.0)  # noqa: E731
-    tx, ty = u() * tlim, u() * tlim
+    tx, ty = u() * tx_lim, u() * ty_lim
     tth = u() * math.pi
     robots = []
     for _ in range(task.n_agents):
-        px, py = u() * lim, u() * lim
+        px, py = u() * lx, u() * ly
         dx, dy = px - tx, py - ty
         dn = math.hypot(dx, dy)
         if dn < clear:
@@ -122,8 +140,8 @@ def _swarp_draw(task: Task, rng: np.random.Generator) -> dict[str, Any]:
                 px, py = tx + dx / dn * clear, ty + dy / dn * clear
             else:
                 px, py = tx, ty + clear
-        robots.append([min(max(px, -lim), lim), min(max(py, -lim), lim), 0.0])
-    gx, gy = u() * tlim, u() * tlim
+        robots.append([min(max(px, -lx), lx), min(max(py, -ly), ly), 0.0])
+    gx, gy = u() * tx_lim, u() * ty_lim
     gth = u() * math.pi
     for r in robots:
         r[2] = u() * math.pi

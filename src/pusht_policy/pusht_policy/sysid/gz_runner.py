@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover
     Contacts = None
 
 from pusht_gz.gz_reset import GzWorld
-from pusht_policy.obs import ObsConfig, label_rays, scan_to_rays
+from pusht_policy.obs import DEFAULT_ARENA_HALF, ObsConfig, label_rays, scan_to_rays
 from pusht_policy.policy_node import stamp_s, yaw_of
 from pusht_policy.sysid.experiments import DT, Experiment, all_experiments
 
@@ -51,7 +51,9 @@ class SysidGz(Node):
         if ckpt:
             import torch
 
-            self.cfg = ObsConfig.from_checkpoint(torch.load(ckpt, map_location="cpu", weights_only=True))
+            self.cfg = ObsConfig.from_checkpoint(
+                torch.load(ckpt, map_location="cpu", weights_only=True), arena_half=DEFAULT_ARENA_HALF
+            )
         self.gz = GzWorld("pusht")
         self.raw = {b: [] for b in BODIES}  # (t, x, y, yaw, vx, vy, w)
         self.last = {b: None for b in BODIES}

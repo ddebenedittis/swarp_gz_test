@@ -62,7 +62,8 @@ class EpisodeManager(Node):
         if not ckpt:
             raise ValueError("parameter 'checkpoint' is required")
 
-        self.task = Task.from_checkpoint(ckpt)
+        # The arena of a checkpoint trained on varying ones (its half side [m]; 0: the default).
+        self.task = Task.from_checkpoint(ckpt, float(self.declare_parameter("arena_half", 0.0).value))
         self.robots = [f"robot_{j}" for j in range(1, self.task.n_agents + 1)]
         self.rng = np.random.default_rng(self.seed)
         self.gz = GzWorld(world)
@@ -92,7 +93,7 @@ class EpisodeManager(Node):
         t = self.task
         self.get_logger().info(
             f"{t.scenario}: {t.n_agents} robots, dt {t.dt}, {t.max_steps} steps, tolerances "
-            f"{t.goal_tolerance} m / {t.angle_tolerance} rad, world +-{t.world_size}, "
+            f"{t.goal_tolerance} m / {t.angle_tolerance} rad, arena +-{t.arena_half}, "
             f"T radius {t.tee_radius:.3f}; {self.episodes} episodes, seed {self.seed} -> {self.csv_path}"
         )
 

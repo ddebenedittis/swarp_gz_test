@@ -14,6 +14,9 @@ crash, a WiFi drop or a stopped launch would leave the robot driving. This node:
   silent, and sends zeros on shutdown;
 * with ``dry_run`` (shadow mode) never publishes to the driver; the gated command still goes
   to ``/<robot>/cmd_vel_gated`` (always published) for logging;
+* takes ``dry_run``, ``max_v``, ``max_w`` and ``arena_half`` changes while running (set them
+  atomically, e.g. ``scripts/real/robots.bash caps``): a restart would reset the odometry the
+  localizer tracks. Going dry sends one zero to the driver first;
 * relays the driver's ``driver_scan`` -> ``/<robot>/scan`` and ``driver_odom`` ->
   ``/<robot>/odom`` with frames prefixed ``<robot>/`` (and the scan rotated by
   ``scan_yaw_offset``), and publishes TF ``<robot>/odom`` -> ``<robot>/base_footprint`` and
@@ -40,6 +43,7 @@ import math
 import rclpy
 from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, String
@@ -107,7 +111,7 @@ class RobotBridge(Node):
         self.create_subscription(Twist, r + "/cmd_vel", self._on_cmd, 10)
         self.create_subscription(PoseStamped, p("pose_topic", r + "/pose").value, self._on_pose, 10)
         self.create_subscription(Bool, p("estop_topic", "/estop").value, self._on_estop, LATCHED)
-        self.driver_pub = None if self.dry_run else self.create_publisher(Twist, driver_cmd, 10)
+        self.driver_pub = self.create_publisher(Twist, driver_cmd, 10)
         self.gated_pub = self.create_publisher(Twist, r + "/cmd_vel_gated", 10)
         self.state_pub = self.create_publisher(String, r + "/bridge_state", LATCHED)
         self.scan_pub = self.create_publisher(LaserScan, r + "/scan", qos_profile_sensor_data) if relay_scan else None
@@ -135,10 +139,15 @@ class RobotBridge(Node):
 
         self.create_timer(1.0 / rate, self._tick)
         self.create_timer(1.0, lambda: self._report(force=True))
+        self.add_on_set_parameters_callback(self._on_params)
+        self.get_logger().info("%s: %s -> %s, timeout %.2f s" % (self.robot, r + "/cmd_vel", driver_cmd,
+                                                                self.lim.cmd_timeout))
+        self._log_caps()
+
+    def _log_caps(self) -> None:
         self.get_logger().info(
-            "%s: %s -> %s%s, |v| <= %.2f, |w| <= %.2f, timeout %.2f s, arena %s"
-            % (self.robot, r + "/cmd_vel", driver_cmd, " (DRY RUN: not forwarded)" if self.dry_run else "",
-               self.lim.max_v, self.lim.max_w, self.lim.cmd_timeout,
+            "%s|v| <= %.2f, |w| <= %.2f, arena %s"
+            % ("DRY RUN (not forwarded), " if self.dry_run else "", self.lim.max_v, self.lim.max_w,
                "off" if self.lim.arena_half <= 0 else "+-%.2f m" % (self.lim.arena_half + self.lim.arena_margin))
         )
 
@@ -155,6 +164,24 @@ class RobotBridge(Node):
     def _on_pose(self, m: PoseStamped) -> None:
         self.pose = (m.pose.position.x, m.pose.position.y, yaw_of(m.pose.orientation))
         self.pose_t = self.now()
+
+    def _on_params(self, params) -> SetParametersResult:
+        lim, dry = self.lim, self.dry_run
+        for q in params:
+            if q.name == "dry_run":
+                dry = bool(q.value)
+            elif q.name in ("max_v", "max_w", "arena_half"):
+                v = float(q.value)
+                if not math.isfinite(v) or v < 0.0:
+                    return SetParametersResult(successful=False, reason="%s must be finite and >= 0" % q.name)
+                lim = lim._replace(**{q.name: v})
+            else:
+                return SetParametersResult(successful=False, reason="%s is fixed at launch" % q.name)
+        if dry and not self.dry_run:
+            self.driver_pub.publish(Twist())
+        self.lim, self.dry_run = lim, dry
+        self._log_caps()
+        return SetParametersResult(successful=True)
 
     def _on_estop(self, m: Bool) -> None:
         if bool(m.data) != self.estop:
@@ -233,7 +260,7 @@ class RobotBridge(Node):
         v, w, reason = gate(self.cmd, now - self.cmd_t, self.estop, self.pose, now - self.pose_t, self.lim)
         out = Twist()
         out.linear.x, out.angular.z = float(v), float(w)
-        if self.driver_pub is not None:
+        if not self.dry_run:
             self.driver_pub.publish(out)
         self.gated_pub.publish(out)
         self.state = ("dry_run:" if self.dry_run else "") + reason
@@ -248,8 +275,6 @@ class RobotBridge(Node):
 
     def stop(self) -> None:
         """Zero the chassis on the way out (SIGINT/SIGTERM)."""
-        if self.driver_pub is None:
-            return
         for _ in range(3):
             self.driver_pub.publish(Twist())
         spin.flush(self.driver_pub)

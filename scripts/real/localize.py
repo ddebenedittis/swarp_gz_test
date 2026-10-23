@@ -2,18 +2,21 @@
 
 Runs in the Humble laptop container (scripts/real/laptop.bash py scripts/real/localize.py CMD ...):
 
+    CMD [CMD ...]          several commands run in order in one process, e.g. `scan match tee`, `check verify tee`
+
     scan [--n 20]          median of N scans per robot -> STATE/scan_<robot>.npz
     match                  global scan-to-map match per robot (likelihood field) -> STATE/poses.json, STATE/overlay.png
     tee [--poses amcl]     fit the checkpoint's T to the returns that are on neither the map nor a robot,
                            propose the arena (centre on the corridor axis through the T, x along the walls)
                            -> STATE/tee.json, STATE/arena.json; prints the arena poses and wall clearances
     args                   the strings for laptop.bash amcl: "x,y,yaw;x,y,yaw" (rad) and map_to_arena
-    seed [--poses amcl]    publish /robot_i/initialpose (poses.json, or the current AMCL estimate), then check
-                           each AMCL answered with a fresh pose (alive) -> exit 1 if not
-    spin ROBOT [--w 0.5]   360 deg in place (closed loop on odometry), 0.12 m forward and back, stop;
-                           through robot_bridge (start the robot with robots.bash start slow|live)
+    seed [--poses amcl]    publish /robot_i/initialpose (poses.json, the current AMCL estimate, or --from), then
+                           check each AMCL answered with a fresh pose (alive) -> exit 1 if not
+    spin ROBOT ... [--w 0.5]  360 deg in place (closed loop on odometry), 0.12 m forward and back, stop; the
+                           robots given move at the same time; through robot_bridge (robots.bash caps slow)
     check                  AMCL pose (map, arena) and 1-sigma per robot
-    verify                 fresh scans, local match around each AMCL estimate: the disagreement in cm / deg
+    verify                 fresh scans (kept for a following tee), local match around each AMCL estimate:
+                           the disagreement in cm / deg
 
 Poses are base_footprint in the map frame, yaw in degrees in the JSON files.
 """
@@ -213,6 +216,9 @@ def cmd_match(a):
 
 
 def current_poses(a):
+    if a.from_:
+        return {r: dict(x=float(x), y=float(y), yaw=math.degrees(float(t)))
+                for r, (x, y, t) in zip(ROBOTS, (p.split(",") for p in a.from_.split(";")))}
     if a.poses == "amcl":
         am = amcl_poses()
         return {r: dict(x=v["x"], y=v["y"], yaw=v["yaw"]) for r, v in am.items()}
@@ -255,8 +261,15 @@ def cmd_tee(a):
     P = offmap_points(a, m, poses)
     if len(P) < 10:
         sys.exit(f"only {len(P)} returns off the map: is the T within ~4 m and seen by a robot?")
-    task = Task.from_checkpoint(a.checkpoint)
+    task = Task.from_checkpoint(a.checkpoint, a.arena_half or None)
     boxes = list(zip(task.tee_off, task.tee_half))
+    import torch
+
+    from pusht_policy.obs import ObsConfig
+
+    meta = torch.load(a.checkpoint, map_location="cpu", weights_only=True)
+    bound = ObsConfig.from_checkpoint(meta, arena_half=a.arena_half or task.arena_half[0]).label_bound
+    bound_y = bound if isinstance(bound, float) else bound[1]
     # the biggest cluster (the T), seeded at the densest point
     d = np.hypot(P[:, None, 0] - P[None, :, 0], P[:, None, 1] - P[None, :, 1])
     seed = P[np.argmax((d < 0.4).sum(1))]
@@ -319,9 +332,9 @@ def cmd_tee(a):
     for r in ROBOTS:
         p = poses[r]
         print(f"  {r} arena ({'%.2f, %.2f, %.0f deg' % in_arena(p['x'], p['y'], p['yaw'])})")
-    if half_w < 2.5:
-        print(f"  NOTE: the walls are {half_w:.2f} m from the axis, inside the policy's 2.5 m label bound: a robot within "
-              f"1.5 m of a wall sees it as the T. Keep the T and the goal near the axis (|y| small).")
+    if half_w < bound_y:
+        print(f"  NOTE: the walls are {half_w:.2f} m from the axis, inside the policy's {bound_y:.2f} m label bound: a robot "
+              f"within 1.5 m of a wall sees it as the T. Keep the T and the goal near the axis (|y| small).")
     overlay(a, m, poses, tee=(tx, ty, tth), boxes=boxes, arena=(cx, cy, ax))
 
 
@@ -373,43 +386,53 @@ def cmd_seed(a):
 
 
 def cmd_spin(a):
+    """All of a.robots at once: each turns 360 deg (closed loop on its odometry), then drives 0.12 m
+    forward and back; a robot that finished a phase waits at zero for the others."""
     from geometry_msgs.msg import Twist
     from nav_msgs.msg import Odometry
 
     n = ros_node("localize_spin")
-    pub = n.create_publisher(Twist, f"/{a.robot}/cmd_vel", 10)
-    st = dict(yaw=None, acc=0.0, x=0.0, y=0.0)
+    pubs = {r: n.create_publisher(Twist, f"/{r}/cmd_vel", 10) for r in a.robots}
+    st = {r: dict(yaw=None, acc=0.0, x=0.0, y=0.0) for r in a.robots}
 
-    def on_odom(m):
-        yaw = yaw_of(m.pose.pose.orientation)
-        if st["yaw"] is not None:
-            st["acc"] += math.remainder(yaw - st["yaw"], 2 * math.pi)
-        st.update(yaw=yaw, x=m.pose.pose.position.x, y=m.pose.pose.position.y)
+    def on_odom(r, m):
+        s, yaw = st[r], yaw_of(m.pose.pose.orientation)
+        if s["yaw"] is not None:
+            s["acc"] += math.remainder(yaw - s["yaw"], 2 * math.pi)
+        s.update(yaw=yaw, x=m.pose.pose.position.x, y=m.pose.pose.position.y)
 
-    n.create_subscription(Odometry, f"/{a.robot}/odom", on_odom, 20)
+    for r in a.robots:
+        n.create_subscription(Odometry, f"/{r}/odom", lambda m, r=r: on_odom(r, m), 20)
 
-    def send(v, w):
+    def send(r, v, w):
         t = Twist()
         t.linear.x, t.angular.z = v, w
-        pub.publish(t)
+        pubs[r].publish(t)
+
+    def run(done, cmd, timeout):
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            left = [r for r in a.robots if not done(r)]
+            if not left:
+                break
+            for r in a.robots:
+                send(r, *(cmd if r in left else (0.0, 0.0)))
+            spin_for(n, lambda: False, 0.1)
+        return time.time() - t0
 
     try:
-        if not spin_for(n, lambda: st["yaw"] is not None, 20.0):
-            sys.exit(f"no /{a.robot}/odom")
-        t0 = time.time()
-        while abs(st["acc"]) < 2 * math.pi and time.time() - t0 < 40:
-            send(0.0, a.w)
-            spin_for(n, lambda: False, 0.1)
-        print(f"{a.robot}: turned {math.degrees(st['acc']):.0f} deg in {time.time() - t0:.1f} s")
+        if not spin_for(n, lambda: all(s["yaw"] is not None for s in st.values()), 20.0):
+            sys.exit(f"no odom from {[r for r in a.robots if st[r]['yaw'] is None]}")
+        dt = run(lambda r: abs(st[r]["acc"]) >= 2 * math.pi, (0.0, a.w), 40)
+        print(", ".join(f"{r} turned {math.degrees(st[r]['acc']):.0f} deg" for r in a.robots) + f" in {dt:.1f} s")
         for v in (0.1, -0.1):
-            x0, y0, t1 = st["x"], st["y"], time.time()
-            while math.hypot(st["x"] - x0, st["y"] - y0) < 0.12 and time.time() - t1 < 3:
-                send(v, 0.0)
-                spin_for(n, lambda: False, 0.1)
-        print(f"{a.robot}: forward and back 0.12 m")
+            x0 = {r: (st[r]["x"], st[r]["y"]) for r in a.robots}
+            run(lambda r: math.hypot(st[r]["x"] - x0[r][0], st[r]["y"] - x0[r][1]) >= 0.12, (v, 0.0), 3)
+        print("forward and back 0.12 m")
     finally:
         for _ in range(5):
-            send(0.0, 0.0)
+            for r in a.robots:
+                send(r, 0.0, 0.0)
             time.sleep(0.05)
 
 
@@ -495,7 +518,8 @@ def overlay(a, m, poses, tee=None, boxes=None, arena=None):
     if arena:
         cx, cy, ax = arena
         c, s = math.cos(ax), math.sin(ax)
-        for h, col in ((2.0, (120, 120, 120)), (1.75, (255, 0, 255))):
+        half = a.arena_half or 2.0
+        for h, col in ((half, (120, 120, 120)), (half + 0.25, (255, 0, 255))):
             d.polygon([P(cx + c * u - s * v, cy + s * u + c * v) for u, v in ((h, h), (h, -h), (-h, -h), (-h, h))], outline=col, width=2)
         d.line([P(cx, cy), P(cx + 0.5 * c, cy + 0.5 * s)], fill=(120, 120, 120), width=3)
     out = a.state / "overlay.png"
@@ -506,21 +530,32 @@ def overlay(a, m, poses, tee=None, boxes=None, arena=None):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["scan", "match", "tee", "args", "seed", "spin", "check", "verify"])
-    ap.add_argument("robot", nargs="?")
+    ap.add_argument("words", nargs="+", metavar="CMD", help="commands in order; robots after spin")
     ap.add_argument("--map", default=os.environ.get("MAP", str(WS / "out/real/maps/map_corridor.yaml")))
     ap.add_argument("--state", type=Path, default=WS / "out/real/state")
-    ap.add_argument("--checkpoint", default="/opt/swarp/runs/remote-davide-cf/L8b-s2-slim240-s0/pusht_lidar_limo_slim240_s2_best.pt")
+    ap.add_argument("--checkpoint", default=os.environ.get(
+        "CHECKPOINT", "/opt/swarp/runs/remote-davide-cf/L9c-arena-s0/pusht_lidar_limo_slim240_arena_best.pt"))
+    ap.add_argument("--arena-half", type=float, default=float(os.environ.get("ARENA_HALF", "0")),
+                    help="the arena's half side [m] (config.bash ARENA_HALF); sets the label bound of a "
+                         "checkpoint trained on varying arenas")
     ap.add_argument("--n", type=int, default=20)
     ap.add_argument("--w", type=float, default=0.5)
     ap.add_argument("--poses", choices=["state", "amcl"], default="state")
+    ap.add_argument("--from", dest="from_", help="seed: poses 'x,y,yaw;x,y,yaw' (map, rad), as for laptop.bash amcl")
     ap.add_argument("--arena-yaw", type=float, help="override the arena x axis [deg in the map]")
     ap.add_argument("--arena-centre", help="override the arena centre 'x,y' in the map")
     a = ap.parse_args()
     a.state.mkdir(parents=True, exist_ok=True)
-    if a.cmd == "spin" and a.robot not in ROBOTS:
-        sys.exit("spin needs robot_1 or robot_2")
-    globals()[f"cmd_{a.cmd}"](a)
+    cmds = ["scan", "match", "tee", "args", "seed", "spin", "check", "verify"]
+    a.robots = [w for w in a.words if w in ROBOTS]
+    bad = [w for w in a.words if w not in cmds and w not in ROBOTS]
+    if bad:
+        ap.error(f"unknown {bad}: commands are {cmds}")
+    if "spin" in a.words and not a.robots:
+        sys.exit("spin needs robot_1 and/or robot_2")
+    for c in a.words:
+        if c in cmds:
+            globals()[f"cmd_{c}"](a)
 
 
 if __name__ == "__main__":

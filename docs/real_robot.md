@@ -22,6 +22,8 @@ Do not skip ahead: every stage checks an assumption the next one relies on.
 - `robot_bridge` also publishes `/robot_i/scan_loc` for AMCL: the scan with every return inside the square `|x|, |y| ≤ loc_half` (2.35 m, at the robot's latest `/robot_i/pose`) removed, since the arena holds only the T and the robots, which are not on the map.
 - `robot_bridge` clamps the policy's command to the trained `|v| ≤ 0.4 m/s`, `|ω| ≤ 1.5 rad/s`, and publishes zeros to the chassis at 20 Hz whenever no command arrived for 0.3 s, `/estop` is true, or (arena stop on) its `/robot_i/pose` is older than 0.5 s; past the arena edge plus 0.25 m it zeroes outward motion.
 - `dry_run:=true` (shadow mode) never sends anything to the chassis; the gated command still goes to `/robot_i/cmd_vel_gated`.
+- `dry_run`, `max_v`, `max_w` and `arena_half` also change while the bridge runs (one atomic parameter set, `scripts/real/robots.bash caps MODE`, which runs `python3 -m limo_bridge.caps` onboard): restarting the stack would reset the odometry the localizer tracks.
+  Going dry sends one zero to the chassis first; every other parameter is fixed at launch; `caps` refuses to leave dry while `/episode` is running.
 - `limo_real` (laptop): the pose sources (`mocap_relay`, `amcl_relay`), `laptop.launch.py` (pose source and policies), the `operator` console (goal, start/stop, e-stop, scoring), `pose_error`, and the measurement scripts.
 - `laptop.launch.py rviz:=true` opens RViz (`limo_real/config/real.rviz`, fixed frame `map`): the map, both scans, each robot's footprint on its localized TF frame, AMCL's pose with its covariance ellipse, the goal T with its tolerance circle, and the arena square (`amcl_relay` puts `arena` on TF under `map`).
 - The goal T in RViz can be dragged (Interact tool, `goal (drag)` display): move it in the plane, turn it by its ring; on release `viz` sends it on `/goal_request` and the operator console applies it, also mid-episode (the policies follow it at once; the change goes in the episode's `events`, and `goal` in `episodes.csv` is the last one).
@@ -82,7 +84,13 @@ On the laptop: `docker/build.bash`, then `docker/run.bash` and `colcon build --s
 
 ## Checklist
 
-Every command below except the robot ones runs in the laptop container; `<ck>` is the checkpoint, e.g. `/opt/swarp/runs/remote-davide-cf/L8b-s2-slim240-s0/pusht_lidar_limo_slim240_s2_best.pt` (L8b, recipe `pusht_lidar_limo_slim240_s2`: the slim T, 43 rays over ±120°, open arena; `/opt/swarp` on the `swarp` branch `pusht-lidar-limo`).
+Every command below except the robot ones runs in the laptop container; `<ck>` is the checkpoint, `/opt/swarp` on the `swarp` branch `pusht-lidar-limo`.
+Two are current:
+
+- L9c, `/opt/swarp/runs/remote-davide-cf/L9c-arena-s0/pusht_lidar_limo_slim240_arena_best.pt` (recipe `pusht_lidar_limo_slim240_arena`, the default in `scripts/real/config.bash`): the slim T, 40 rays over ±110°, trained on arenas of 2–5 m per side with walls and clutter outside them.
+  It observes the arena's half-extents and labels returns only out to the arena plus 0.5 m on each axis, so every node that builds its observation takes the arena: `policy_node`, `episode_manager`, `viz` and `eval.launch.py` read `arena_half` (the half side of a square arena, 1.0–2.5 m), and `policy_node` refuses to start without it.
+  In swarp it solves 0.99 greedy at 4 × 4 m and 0.92 at 5 × 5 m, under AMCL-sized pose noise (`swarp` `docs/pusht-lidar.md`); it has not run in Gazebo or on the robots yet.
+- L8b, `/opt/swarp/runs/remote-davide-cf/L8b-s2-slim240-s0/pusht_lidar_limo_slim240_s2_best.pt` (recipe `pusht_lidar_limo_slim240_s2`): the slim T, 43 rays over ±120°, a fixed 4 × 4 m open arena labelled out to ±2.5 m whatever the real arena is.
 
 ### 0. Before anything moves
 
@@ -103,8 +111,9 @@ Keep the numbers: they go to the recipe author (FOV, pose noise, latency) and in
 2. **Static lidar scan** (robot in open space, one narrow object 1 m straight ahead): `ros2 run limo_real measure_lidar_static --ros-args -p robot:=robot_i`.
    It reports the self-return and blind sectors, the unobstructed field of view `fov_rad`, and the object's bearing `probe_bearing_deg`.
    If the bearing is not ~0, restart the robot with `scan_yaw_offset:=<minus the bearing, in rad>` and repeat.
-   Use `fov_rad` (the smallest over the robots) as `lidar_fov` everywhere below and send it to the recipe author; `policy_node` refuses a `lidar_fov` below the checkpoint's narrowest trained one (240° for L8b, trained at that fixed field of view) unless `allow_fov_below_trained`.
-   For a checkpoint trained at a fixed field of view, such as L8b, pass that one instead (`lidar_fov:=4.18879`) as long as `fov_rad` is at least as wide: `policy_node` cuts the raw scan to `lidar_fov` at the mount, so a wider sensor is cropped to what the policy saw in training.
+   Use `fov_rad` (the smallest over the robots) as `lidar_fov` everywhere below and send it to the recipe author; `policy_node` refuses a `lidar_fov` below the checkpoint's narrowest trained one (240° for L8b, 220° for L9c, each trained at that fixed field of view) unless `allow_fov_below_trained`.
+   For a checkpoint trained at a fixed field of view, pass that one instead (`lidar_fov:=4.18879` for L8b, `3.83972` for L9c) as long as `fov_rad` is at least as wide: `policy_node` cuts the raw scan to `lidar_fov` at the mount, so a wider sensor is cropped to what the policy saw in training.
+   The lab's drivers deliver −116…+108° (`limo_bridge/config/ydlidar_tmini_pro.yaml`), so L9c's ±110° loses only 108–110° on the left, and L8b's ±120° loses 108–120° on the left and 116–120° on the right.
    This FOV is measured from the mount, as checkpoints trained with `lidar_fov_at_mount` (L7 on, the checkpoint says which) cut it: for those a measured 240° serves a 240° policy.
    Older checkpoints (through L6) blank by the bearing from the robot's centre instead, so a physical 240° hides a T against the robot's side that they expect to see (in Gazebo L6 went from 11/20 to 1/20, `docs/results.md`), and they need about 290° at the mount to serve a 240° policy.
    Repeat with `-p checkpoint:=<ck>`: `policy_rays_hit` lists the policy's binned rays that read a hit in open space; it must be empty, or the robot sees its own wheels or mount as obstacles (the checkpoint's minimum range is 0.02 m for L6 and L8b, so returns within 2 cm of the lidar are all that is dropped besides the footprint).

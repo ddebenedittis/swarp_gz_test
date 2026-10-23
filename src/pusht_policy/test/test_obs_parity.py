@@ -67,6 +67,15 @@ SPAN240 = dict(
     n_rays=43, lidar_span=4.18879, lidar_fov=4.18879, lidar_fov_at_mount=True,
     open_arena=True, oob_margin=0.5,
 )
+# L9's layout (pusht_lidar_limo_slim240_arena): 40 rays over +-110 deg and a per-env arena,
+# here pinned to 2 x 4 m (a rectangle, so a swapped axis shows), observed and labelled to
+# the arena plus the out-of-bounds margin on each axis.
+ARENA220 = dict(
+    SPAN240, n_rays=40, lidar_span=math.radians(220.0), lidar_fov=math.radians(220.0),
+    arena_size=(2.0, 2.0, 4.0, 4.0),
+)
+ARENA220_HALF = (1.0, 2.0)
+
 # Observers, a disc fleet and world-axis rays: the role sign, teammate order and the
 # holonomic layout (no heading block).
 MIXED = dict(n_agents=3, n_pushers=1, obs_level=1, frame_stack=3, world_size=0.5)
@@ -74,7 +83,8 @@ MIXED = dict(n_agents=3, n_pushers=1, obs_level=1, frame_stack=3, world_size=0.5
 
 def _config(kw: dict) -> ObsConfig:
     names = ObsConfig.__dataclass_fields__.keys()
-    return ObsConfig(**{k: v for k, v in kw.items() if k in names})
+    half = {"arena_half": ARENA220_HALF} if kw.get("arena_size") is not None else {}
+    return ObsConfig(**{k: v for k, v in kw.items() if k in names}, **half)
 
 
 def _env(kw: dict, fused: bool, n_envs: int):
@@ -127,8 +137,9 @@ def _build(builders, snap, envs) -> np.ndarray:
 @pytest.mark.parametrize(
     "kw",
     [U_H1, LIMO, MIXED, dict(REAL, lidar_fov=4.18879), dict(REAL, lidar_fov=4.18879, lidar_fov_at_mount=True),
-     SPAN240],
-    ids=["u_h1", "limo", "mixed", "real_fov240", "real_fov240_mount", "span240_open"],
+     SPAN240, ARENA220],
+    ids=["u_h1", "limo", "mixed", "real_fov240", "real_fov240_mount", "span240_open",
+         "arena220"],
 )
 def test_obs_matches_swarp(kw, fused):
     torch = pytest.importorskip("torch")
@@ -343,8 +354,8 @@ def _swarp_scan(snap, scen, e: int, a: int, fov: float, at_mount: bool) -> dict:
 @pytest.mark.parametrize(
     "fov,at_mount,base",
     [(2.0 * math.pi, False, REAL), (4.18879, False, REAL), (4.18879, True, REAL),
-     (4.18879, True, SPAN240)],
-    ids=["fov360", "fov240_per_ray", "fov240_at_mount", "span240_open"],
+     (4.18879, True, SPAN240), (math.radians(220.0), True, ARENA220)],
+    ids=["fov360", "fov240_per_ray", "fov240_at_mount", "span240_open", "arena220"],
 )
 def test_sensor_matches_swarp(fov, at_mount, base):
     """End to end on the real-Limo sensor model: from swarp's own states, a synthetic mount
@@ -394,3 +405,43 @@ def test_sensor_matches_swarp(fov, at_mount, base):
     assert hits > 500, "too few hits for the parity to say anything"
     assert wrong / total < 0.01, f"{wrong} of {total} ray classes differ"
     assert np.median(range_err) < 0.005 and np.percentile(range_err, 99) < 0.03
+
+
+def test_arena_checkpoint_needs_a_deployed_arena_inside_the_trained_range():
+    """L9's metadata: the arena block and the per-axis label bound come from arena_half,
+    which must be given and lie within the trained 2-5 m."""
+    meta = {
+        "scenario": "pusht_lidar_limo_slim240_arena", "n_agents": 2, "role_counts": [2, 0],
+        "obs_dim": 496,
+        "scen_kwargs": {
+            "model": "diff_drive", "agent_shape": "box", "agent_half_extents": "(0.161, 0.11)",
+            "frame_stack": "4", "n_rays": "40", "lidar_max_range": "1.5", "world_size": "2.5",
+            "open_arena": "True", "oob_margin": "0.5", "arena_size": "(2.0, 5.0)",
+            "lidar_span": str(math.radians(220.0)), "lidar_fov_at_mount": "True",
+        },
+    }
+    cfg = ObsConfig.from_checkpoint(meta, arena_half=1.5)
+    assert cfg.arena_half == (1.5, 1.5) and cfg.label_bound == (2.0, 2.0)
+    assert cfg.layout()["arena"] == slice(11, 13)
+    assert ObsConfig.from_checkpoint(meta, arena_half=(1.0, 2.5)).label_bound == (1.5, 3.0)
+    with pytest.raises(ValueError, match="arena_half"):
+        ObsConfig.from_checkpoint(meta)
+    with pytest.raises(ValueError, match="outside the trained"):
+        ObsConfig.from_checkpoint(meta, arena_half=3.0)
+    row = ObsBuilder(cfg, 0).build(
+        np.zeros((2, 2)), np.zeros((2, 2)), np.zeros(2), np.zeros(2, dtype=int),
+        np.ones(2), 0.0, np.full(40, 1.5), np.zeros(40, dtype=np.uint8),
+    )
+    np.testing.assert_array_equal(row[cfg.layout()["arena"]], [1.5, 1.5])
+
+
+def test_label_rays_bounds_each_axis():
+    """A per-axis bound: a hit 1.2 m ahead is past x = 1.0 (a miss), one 1.2 m to the left
+    is inside y = 2.0 (the T)."""
+    r, cls = label_rays(np.array([1.2, 1.2]), (0.0, 0.0, 0.0), 1.5, (1.0, 2.0),
+                        np.zeros((0, 2)), np.zeros(0), LIMO_HALF, span=math.pi)
+    # Two rays over a 180 deg span: -90 deg (right, -y) and +90 deg (left, +y); then ahead.
+    assert cls.tolist() == [HIT_MOVABLE, HIT_MOVABLE]
+    r, cls = label_rays(np.array([1.2]), (0.0, 0.0, 0.0), 1.5, (1.0, 2.0),
+                        np.zeros((0, 2)), np.zeros(0), LIMO_HALF)
+    assert cls.tolist() == [HIT_NONE] and r[0] == 1.5

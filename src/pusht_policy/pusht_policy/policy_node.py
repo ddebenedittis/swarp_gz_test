@@ -110,6 +110,9 @@ class PolicyNode(Node):
         # The robot's measured unobstructed lidar field of view [rad]; rays outside it are
         # blanked as swarp's lidar_fov does (2 pi: none).
         self.lidar_fov = float(self.declare_parameter("lidar_fov", 2.0 * math.pi).value)
+        # The deployed arena's half side [m], for a checkpoint that observes it (trained on
+        # swarp's arena_size); required there, ignored by fixed-arena checkpoints.
+        arena_half = float(self.declare_parameter("arena_half", 0.0).value)
         self.record_dir = self.declare_parameter("record_dir", "").value
         self.sample = bool(self.declare_parameter("sample", False).value)
         self.gen = torch.Generator().manual_seed(int(self.declare_parameter("sample_seed", 0).value))
@@ -118,7 +121,7 @@ class PolicyNode(Node):
 
         torch.set_num_threads(1)
         self.actor, _, meta = load_checkpoint(ckpt, "cpu")
-        self.cfg = ObsConfig.from_checkpoint(meta)
+        self.cfg = ObsConfig.from_checkpoint(meta, arena_half=arena_half if arena_half > 0 else None)
         self._check_sensor(meta, bool(self.declare_parameter("allow_fov_below_trained", False).value))
         n_robots = int(self.declare_parameter("n_robots", self.cfg.n_agents).value)
         if n_robots != self.cfg.n_agents:
@@ -163,7 +166,8 @@ class PolicyNode(Node):
         self.get_logger().info(
             f"{self.name}: agent {self.agent} of {n_robots}, role {int(self.roles[self.agent])}, "
             f"obs_dim {self.cfg.obs_dim}, dt {self.dt}, {self.cfg.n_rays} rays to "
-            f"{self.cfg.max_range} m, frame_stack {self.cfg.frame_stack}, "
+            f"{self.cfg.max_range} m, frame_stack {self.cfg.frame_stack}, labels to "
+            f"{self.cfg.label_bound} m, arena {self.cfg.arena_half or 'fixed'}, "
             f"{'sampled' if self.sample else 'greedy'} actions"
         )
 

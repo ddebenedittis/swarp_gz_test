@@ -4,7 +4,8 @@
   ``<robot>/base_footprint``, so it sits where the localizer puts it;
 * the goal T (``/goal``) with the goal tolerance circle, and the T (``/tee/pose``) when
   something tracks it;
-* the arena square ``[-world_size, world_size]^2``.
+* the arena square ``[-h, h]^2``: ``arena_half`` when given (the lab's arena), else the
+  checkpoint's (``world_size``, or the default for one trained on varying arenas).
 
 The goal is also an interactive marker (server ``/goal_drag``): drag the T in the plane, turn
 it by its ring, and on release the pose goes on ``/goal_request`` (in ``arena``, through TF
@@ -51,15 +52,18 @@ class Viz(Node):
         super().__init__("viz")
         p = self.declare_parameter
         ckpt = p("checkpoint", "").value
+        arena = float(p("arena_half", 0.0).value)
         if ckpt:
             from pusht_policy.task import Task
 
-            task = Task.from_checkpoint(ckpt)
-            n, self.world_size, self.goal_tol = task.n_agents, task.world_size, task.goal_tolerance
+            task = Task.from_checkpoint(ckpt, arena if arena > 0 else None)
+            n, self.goal_tol = task.n_agents, task.goal_tolerance
+            self.world_size = arena if arena > 0 else task.arena_half[0]
             self.tee_boxes = list(zip(task.tee_off, task.tee_half, strict=True))
             half = task.agent_half or (task.agent_radius, task.agent_radius)
         else:
-            n, self.world_size, self.goal_tol = int(p("n_robots", 2).value), 2.0, 0.15
+            n, self.goal_tol = int(p("n_robots", 2).value), 0.15
+            self.world_size = arena if arena > 0 else 2.0
             self.tee_boxes = []
             half = (0.161, 0.110)
         self.robots = [f"robot_{i}" for i in range(1, n + 1)]

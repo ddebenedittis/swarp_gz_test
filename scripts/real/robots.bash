@@ -2,17 +2,39 @@
 # Robot side of the real experiments, run from the laptop host.
 #
 #   scripts/real/robots.bash install                 copy + build limo_bridge into ~/swarp_ws, write run/stop scripts
-#   scripts/real/robots.bash start MODE [i ...]      MODE: dry (shadow) | live (episode caps) | slow (0.15/0.6) | map (slow, arena stop off)
+#   scripts/real/robots.bash start MODE [i ...]      (re)start the stack in MODE, return when its scan/odom reach the laptop
+#   scripts/real/robots.bash caps MODE [i ...]       switch the running bridges to MODE (no restart, odometry kept);
+#                                                    leaving dry is refused while an episode runs (FORCE=1 overrides)
 #   scripts/real/robots.bash stop [i ...]            ~/swarp_ws/stop.sh (robot_bridge sends zeros first)
 #   scripts/real/robots.bash status                  uptime, clock offset, running nodes, deaths in robot.log
 #
+# MODE: dry (nothing forwarded, slow caps) | slow (0.15/0.6) | shadow (nothing forwarded, episode caps)
+#       | live (episode caps) | map (start only: slow, arena stop and scan masking off)
 # i = 1, 2 (default: both). Restarting a robot resets its odometry: restart the laptop AMCL after it
-# (scripts/real/laptop.bash amcl ...).
+# (scripts/real/laptop.bash amcl ...); switching caps does not.
 set -euo pipefail
 source "$(dirname "$(realpath "$0")")/config.bash"
 
 quiet() { grep -vE "post-quantum|store now|upgraded" || true; }
 pick() { if [ $# -eq 0 ]; then echo 1 2; else echo "$@"; fi; }
+# One persistent connection per robot (no mDNS lookup and key exchange per call); the keepalive
+# drops it within ~6 s when the robot reboots.
+SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=~/.ssh/cm-%C" -o ControlPersist=10m
+          -o ServerAliveInterval=2 -o ServerAliveCountMax=3 -o ConnectTimeout=5)
+ssh() { command ssh "${SSH_OPTS[@]}" "$@"; }
+rsync() { command rsync -e "ssh ${SSH_OPTS[*]}" "$@"; }
+
+# robot_bridge parameters of each MODE (launch args for start, live parameters for caps)
+mode_params() {
+    local slow="max_v:=0.15 max_w:=0.6" ep="max_v:=${EPISODE_MAX_V} max_w:=${EPISODE_MAX_W}" a="arena_half:=${ARENA_HALF}"
+    case "$1" in
+        dry)    echo "dry_run:=true ${slow} ${a}" ;;
+        slow)   echo "dry_run:=false ${slow} ${a}" ;;
+        shadow) echo "dry_run:=true ${ep} ${a}" ;;
+        live)   echo "dry_run:=false ${ep} ${a}" ;;
+        *) echo "unknown mode $1" >&2; return 2 ;;
+    esac
+}
 
 install_robot() {
     local k=$1 h=${ROBOT_HOSTS[$1]} distro=${ROBOT_DISTROS[$1]} agx=${ROBOT_AGX_WS[$1]} rmw=""
@@ -42,14 +64,17 @@ install_robot() {
 </CycloneDDS>
 EOF
     fi
-    ssh "$h" "cat > ~/swarp_ws/run_robot.sh" 2>&1 <<EOF | quiet
-#!/bin/bash
-# Starts limo_bridge robot.launch.py in the background; args go to the launch. Log: ~/swarp_ws/robot.log
+    ssh "$h" "cat > ~/swarp_ws/env.sh" 2>&1 <<EOF | quiet
 source /opt/ros/${distro}/setup.bash
 source ${agx}/install/setup.bash
 source ~/swarp_ws/install/setup.bash
 export ROS_DOMAIN_ID=${ROS_DOMAIN_ID}
 ${rmw}
+EOF
+    ssh "$h" "cat > ~/swarp_ws/run_robot.sh" 2>&1 <<EOF | quiet
+#!/bin/bash
+# Starts limo_bridge robot.launch.py in the background; args go to the launch. Log: ~/swarp_ws/robot.log
+source ~/swarp_ws/env.sh
 cd ~/swarp_ws
 setsid nohup ros2 launch limo_bridge robot.launch.py "\$@" > ~/swarp_ws/robot.log 2>&1 < /dev/null &
 echo \$! > ~/swarp_ws/robot.pid
@@ -70,31 +95,45 @@ EOF
 
 start_robot() {
     local k=$1 mode=$2 h=${ROBOT_HOSTS[$1]} i=$(( $1 + 1 )) args
-    args="robot_name:=robot_${i} port_name:=${ROBOT_PORTS[$k]} loc_half:=${LOC_HALF}"
-    case "$mode" in
-        dry)  args+=" dry_run:=true arena_half:=${ARENA_HALF}" ;;
-        live) args+=" max_v:=${EPISODE_MAX_V} max_w:=${EPISODE_MAX_W} arena_half:=${ARENA_HALF}" ;;
-        slow) args+=" max_v:=0.15 max_w:=0.6 arena_half:=${ARENA_HALF}" ;;
-        map)  args="robot_name:=robot_${i} port_name:=${ROBOT_PORTS[$k]} max_v:=0.15 max_w:=0.6 arena_half:=0 loc_half:=0" ;;
-        *) echo "unknown mode $mode" >&2; exit 2 ;;
-    esac
+    args="robot_name:=robot_${i} port_name:=${ROBOT_PORTS[$k]}"
+    if [ "$mode" = map ]; then args+=" max_v:=0.15 max_w:=0.6 arena_half:=0 loc_half:=0"
+    else args+=" loc_half:=${LOC_HALF} $(mode_params "$mode")"; fi
+    args+=" ${ROBOT_EXTRA[$k]}"
     ssh "$h" "~/swarp_ws/stop.sh > /dev/null; ~/swarp_ws/run_robot.sh ${args}" 2>&1 | quiet
 }
 
 cmd=${1:-}; shift || true
 case "$cmd" in
     install) for i in $(pick "$@"); do echo "== robot_$i"; install_robot $((i - 1)); done ;;
-    start)   mode=$1; shift; for i in $(pick "$@"); do echo "== robot_$i ($mode)"; start_robot $((i - 1)) "$mode" & done; wait ;;
+    start)
+        mode=$1; shift; [ "$mode" = map ] || mode_params "$mode" > /dev/null || exit 2
+        topics=()
+        for i in $(pick "$@"); do
+            echo "== robot_$i ($mode)"; start_robot $((i - 1)) "$mode" &
+            topics+=(/robot_$i/scan /robot_$i/odom /robot_$i/bridge_state)
+        done
+        wait
+        "${REAL_DIR}/laptop.bash" py scripts/real/wait_topics.py --timeout 90 "${topics[@]}"
+        ;;
+    caps)
+        mode=$1; shift; ps=$(mode_params "$mode") || exit 2
+        for i in $(pick "$@"); do
+            ssh "${ROBOT_HOSTS[$((i - 1))]}" "source ~/swarp_ws/env.sh; python3 -m limo_bridge.caps robot_$i $ps ${FORCE:+--force}" 2>&1 | quiet &
+        done
+        wait
+        ;;
     stop)    for i in $(pick "$@"); do ssh "${ROBOT_HOSTS[$((i - 1))]}" '~/swarp_ws/stop.sh' 2>&1 | quiet | sed "s/^/[robot_$i] /" & done; wait ;;
     status)
         for i in 1 2; do
             h=${ROBOT_HOSTS[$((i - 1))]}
-            echo "== robot_$i $h: $(ssh -o ConnectTimeout=5 "$h" 'uptime -p; echo "nodes: $(pgrep -fc "limo_base|robot_bridge|ydlidar_ros2")"; echo "deaths: $(grep -c died ~/swarp_ws/robot.log 2>/dev/null)"' 2>&1 | quiet | tr '\n' ' ')"
+            echo "== robot_$i $h: $(ssh "$h" 'uptime -p; echo "nodes: $(pgrep -fc "limo_base|robot_bridge|ydlidar_ros2")"; echo "deaths: $(grep -c died ~/swarp_ws/robot.log 2>/dev/null)"' 2>&1 | quiet | tr '\n' ' ')" &
         done
-        python3 - "${ROBOT_HOSTS[@]}" <<'EOF'
+        wait
+        python3 - "${ROBOT_HOSTS[@]}" -- "${SSH_OPTS[@]}" <<'EOF'
 import subprocess, sys, time
-for h in sys.argv[1:]:
-    p = subprocess.Popen(["ssh", h, "python3 -u -c 'import sys,time\nfor l in sys.stdin: print(repr(time.time()), flush=True)'"],
+k = sys.argv.index("--")
+for h in sys.argv[1:k]:
+    p = subprocess.Popen(["ssh", *sys.argv[k + 1:], h, "python3 -u -c 'import sys,time\nfor l in sys.stdin: print(repr(time.time()), flush=True)'"],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
     res = []
     for _ in range(20):

@@ -109,9 +109,11 @@ class LidarStatic(Node):
     def _policy_view(self) -> list:
         """Rays (index, bearing deg, share of scans) the checkpoint's observation reads as hits."""
         import torch
-        from pusht_policy.obs import ObsConfig, label_rays, scan_to_rays
+        from pusht_policy.obs import DEFAULT_ARENA_HALF, ObsConfig, label_rays, scan_to_rays
 
-        cfg = ObsConfig.from_checkpoint(torch.load(self.checkpoint, map_location="cpu", weights_only=False))
+        cfg = ObsConfig.from_checkpoint(
+            torch.load(self.checkpoint, map_location="cpu", weights_only=False), arena_half=DEFAULT_ARENA_HALF
+        )
         hits = np.zeros(cfg.n_rays)
         for s in self.scans:
             rays, _ = scan_to_rays(
