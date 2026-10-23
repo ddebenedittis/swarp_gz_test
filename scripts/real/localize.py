@@ -6,12 +6,13 @@ Runs in the Humble laptop container (scripts/real/laptop.bash py scripts/real/lo
 
     scan [--n 20]          median of N scans per robot -> STATE/scan_<robot>.npz
     match                  global scan-to-map match per robot (likelihood field) -> STATE/poses.json, STATE/overlay.png
-    tee [--poses amcl]     fit the checkpoint's T to the returns that are on neither the map nor a robot,
-                           propose the arena (centre on the corridor axis through the T, x along the walls)
+    tee [--poses amcl]     fit the checkpoint's T to the returns that are on neither the map nor a robot; the
+                           arena: --arena-centre/--arena-yaw (config.bash ARENA_CENTRE/ARENA_YAW; without a T too),
+                           or with `auto` proposed (centre on the corridor axis through the T, x along the walls)
                            -> STATE/tee.json, STATE/arena.json; prints the arena poses and wall clearances
     args                   the strings for laptop.bash amcl: "x,y,yaw;x,y,yaw" (rad) and map_to_arena
-    seed [--poses amcl]    publish /robot_i/initialpose (poses.json, the current AMCL estimate, or --from), then
-                           check each AMCL answered with a fresh pose (alive) -> exit 1 if not
+    seed [--poses amcl]    publish /robot_i/initialpose (poses.json, the current AMCL estimate, or --from), resent
+                           until each AMCL answers with a fresh pose (--seed-timeout) -> exit 1 if one never does
     spin ROBOT ... [--w 0.5]  360 deg in place (closed loop on odometry), 0.12 m forward and back, stop; the
                            robots given move at the same time; through robot_bridge (robots.bash caps slow)
     check                  AMCL pose (map, arena) and 1-sigma per robot
@@ -59,6 +60,17 @@ def load_map(path: str):
                 lik=np.exp(-dist ** 2 / (2 * 0.08 ** 2)))
 
 
+def lik_at(m, wx, wy):
+    """Likelihood field at world points, 0 off the map (score's hot loop: float32, one flat lookup)."""
+    if "lik_flat" not in m:
+        m["lik_flat"] = np.append(m["lik"].ravel(), 0.0).astype(np.float32)
+    u = (np.asarray(wx, np.float32) - np.float32(m["ox"])) / np.float32(m["res"])
+    v = (np.asarray(wy, np.float32) - np.float32(m["oy"])) / np.float32(m["res"])
+    ok = (u >= 0) & (u < m["W"]) & (v >= 0) & (v < m["H"])
+    idx = (m["H"] - 1 - v.astype(np.int32)) * m["W"] + u.astype(np.int32)
+    return m["lik_flat"][np.where(ok, idx, m["H"] * m["W"])]
+
+
 def cells(m, x, y):
     col = np.floor((x - m["ox"]) / m["res"]).astype(int)
     row = (m["H"] - 1 - np.floor((y - m["oy"]) / m["res"])).astype(int)
@@ -80,21 +92,28 @@ def to_world(pose, lx, ly):
 
 
 def score(m, pose, lx, ly):
-    wx, wy = to_world(pose, lx, ly)
-    r, c, ok = cells(m, wx, wy)
-    return float(np.where(ok, m["lik"][r, c], 0.0).mean())
+    return float(lik_at(m, *to_world(pose, lx, ly)).mean())
+
+
+def scores(m, xs, ys, t, lx, ly):
+    """score() of the poses (xs[k], ys[k], t) at once."""
+    c, s = math.cos(t), math.sin(t)
+    wx = xs[:, None] + c * lx[None] - s * ly[None]
+    wy = ys[:, None] + s * lx[None] + c * ly[None]
+    return lik_at(m, wx, wy).mean(1)
 
 
 def refine(m, pose, lx, ly, dxy=0.15, dth=3.0):
     best = (score(m, pose, lx, ly), *pose)
+    k = np.arange(-6, 7)
     for step_xy, step_th in ((dxy / 6, math.radians(dth / 6)), (dxy / 24, math.radians(dth / 24))):
         x0, y0, t0 = best[1:]
-        for t in t0 + step_th * np.arange(-6, 7):
-            for x in x0 + step_xy * np.arange(-6, 7):
-                for y in y0 + step_xy * np.arange(-6, 7):
-                    s = score(m, (x, y, t), lx, ly)
-                    if s > best[0]:
-                        best = (s, x, y, t)
+        gx, gy = (g.ravel() for g in np.meshgrid(x0 + step_xy * k, y0 + step_xy * k, indexing="ij"))
+        for t in t0 + step_th * k:
+            v = scores(m, gx, gy, t, lx, ly)
+            i = int(np.argmax(v))
+            if v[i] > best[0]:
+                best = (float(v[i]), float(gx[i]), float(gy[i]), float(t))
     return best
 
 
@@ -106,14 +125,11 @@ def global_match(m, lx, ly):
     cx = m["ox"] + (fx[keep] + 0.5) * m["res"]
     cy = m["oy"] + (m["H"] - fy[keep] - 0.5) * m["res"]
     sub = np.linspace(0, lx.size - 1, min(lx.size, 120)).astype(int)
-    sx, sy = lx[sub], ly[sub]
+    f32 = lambda v: v.astype(np.float32)  # noqa: E731
+    cx32, cy32, sx, sy = f32(cx), f32(cy), f32(lx[sub]), f32(ly[sub])
     cands = []
     for t in np.radians(np.arange(0, 360, 2.0)):
-        c, s = math.cos(t), math.sin(t)
-        wx = cx[:, None] + c * sx[None] - s * sy[None]
-        wy = cy[:, None] + s * sx[None] + c * sy[None]
-        r, cc, ok = cells(m, wx, wy)
-        v = np.where(ok, m["lik"][r, cc], 0.0).mean(1)
+        v = scores(m, cx32, cy32, t, sx, sy)
         for i in np.argsort(v)[-3:]:
             cands.append((float(v[i]), float(cx[i]), float(cy[i]), float(t)))
     cands.sort(reverse=True)
@@ -199,11 +215,17 @@ def cmd_scan(a):
 
 
 def cmd_match(a):
+    from concurrent.futures import ThreadPoolExecutor
+
     m = load_map(a.map)
+    lik_at(m, 0.0, 0.0)   # build the lookup table before the threads share m
+    pts = {r: scan_points(a.state, r) for r in ROBOTS}
+    with ThreadPoolExecutor(len(ROBOTS)) as ex:   # numpy releases the GIL: both robots at once
+        found = dict(zip(ROBOTS, ex.map(lambda r: global_match(m, *pts[r]), ROBOTS)))
     poses = {}
     for r in ROBOTS:
-        lx, ly = scan_points(a.state, r)
-        (s, x, y, t), rival = global_match(m, lx, ly)
+        lx, ly = pts[r]
+        (s, x, y, t), rival = found[r]
         poses[r] = dict(x=x, y=y, yaw=math.degrees(t), score=s)
         warn = ""
         if s < 0.6:
@@ -259,7 +281,7 @@ def cmd_tee(a):
     m = load_map(a.map)
     poses = current_poses(a)
     P = offmap_points(a, m, poses)
-    if len(P) < 10:
+    if len(P) < 10 and (a.arena_centre is None or a.arena_yaw is None):
         sys.exit(f"only {len(P)} returns off the map: is the T within ~4 m and seen by a robot?")
     task = Task.from_checkpoint(a.checkpoint, a.arena_half or None)
     boxes = list(zip(task.tee_off, task.tee_half))
@@ -270,35 +292,43 @@ def cmd_tee(a):
     meta = torch.load(a.checkpoint, map_location="cpu", weights_only=True)
     bound = ObsConfig.from_checkpoint(meta, arena_half=a.arena_half or task.arena_half[0]).label_bound
     bound_y = bound if isinstance(bound, float) else bound[1]
-    # the biggest cluster (the T), seeded at the densest point
-    d = np.hypot(P[:, None, 0] - P[None, :, 0], P[:, None, 1] - P[None, :, 1])
-    seed = P[np.argmax((d < 0.4).sum(1))]
-    P = P[np.hypot(P[:, 0] - seed[0], P[:, 1] - seed[1]) < 0.5]
-    c0 = P.mean(0)
+    tee = None
+    if len(P) < 10:
+        print(f"T: NOT FOUND, only {len(P)} returns off the map (is it within ~4 m and seen by a robot?); "
+              f"arena from --arena-centre/--arena-yaw")
+    else:
+        # the biggest cluster (the T), seeded at the densest point
+        d = np.hypot(P[:, None, 0] - P[None, :, 0], P[:, None, 1] - P[None, :, 1])
+        seed = P[np.argmax((d < 0.4).sum(1))]
+        P = P[np.hypot(P[:, 0] - seed[0], P[:, 1] - seed[1]) < 0.5]
+        c0 = P.mean(0)
 
-    def outline_dist(px, py):
-        ds = []
-        for (cx, cy), (hx, hy) in boxes:
-            qx, qy = np.abs(px - cx) - hx, np.abs(py - cy) - hy
-            ds.append(np.hypot(np.maximum(qx, 0), np.maximum(qy, 0)) + np.minimum(np.maximum(qx, qy), 0))
-        return np.abs(np.minimum.reduce(ds))
+        def outline_dist(px, py):
+            ds = []
+            for (cx, cy), (hx, hy) in boxes:
+                qx, qy = np.abs(px - cx) - hx, np.abs(py - cy) - hy
+                ds.append(np.hypot(np.maximum(qx, 0), np.maximum(qy, 0)) + np.minimum(np.maximum(qx, qy), 0))
+            return np.abs(np.minimum.reduce(ds))
 
-    best = None
-    for th in np.radians(np.arange(0, 360, 1.0)):
-        cs, sn = math.cos(th), math.sin(th)
-        for x in c0[0] + np.arange(-0.35, 0.351, 0.02):
-            for y in c0[1] + np.arange(-0.35, 0.351, 0.02):
-                dx, dy = P[:, 0] - x, P[:, 1] - y
-                e = np.minimum(outline_dist(cs * dx + sn * dy, -sn * dx + cs * dy), 0.1).mean()
-                if best is None or e < best[0]:
-                    best = (e, x, y, th)
-    e, tx, ty, tth = best
-    tee = dict(x=tx, y=ty, yaw=math.degrees(tth), residual_cm=e * 100, points=len(P))
-    print(f"T: map ({tx:.3f}, {ty:.3f}, {math.degrees(tth):.1f} deg), {len(P)} points, mean residual {e * 100:.1f} cm"
-          + ("  POOR FIT: check the overlay" if e > 0.03 else ""))
-    json.dump(tee, open(a.state / "tee.json", "w"), indent=1)
+        k = np.arange(-0.35, 0.351, 0.02)
+        gx, gy = (g.ravel() for g in np.meshgrid(c0[0] + k, c0[1] + k, indexing="ij"))
+        dx, dy = P[None, :, 0] - gx[:, None], P[None, :, 1] - gy[:, None]
+        best = None
+        for th in np.radians(np.arange(0, 360, 1.0)):
+            cs, sn = math.cos(th), math.sin(th)
+            e = np.minimum(outline_dist(cs * dx + sn * dy, -sn * dx + cs * dy), 0.1).mean(1)
+            i = int(np.argmin(e))
+            if best is None or e[i] < best[0]:
+                best = (float(e[i]), float(gx[i]), float(gy[i]), th)
+        e, tx, ty, tth = best
+        tee = dict(x=tx, y=ty, yaw=math.degrees(tth), residual_cm=e * 100, points=len(P))
+        print(f"T: map ({tx:.3f}, {ty:.3f}, {math.degrees(tth):.1f} deg), {len(P)} points, mean residual {e * 100:.1f} cm"
+              + ("  POOR FIT: check the overlay" if e > 0.03 else ""))
+        json.dump(tee, open(a.state / "tee.json", "w"), indent=1)
+        tee = (tx, ty, tth)
 
-    # Arena: x along the walls, centred between the walls on the normal through the T.
+    # Arena: x along the walls, centred between the walls on the normal through the T (or the given centre).
+    px, py = tee[:2] if tee else (float(v) for v in a.arena_centre.split(","))
     ax = wall_direction(m)
     if a.arena_yaw is not None:
         ax = math.radians(a.arena_yaw)
@@ -306,14 +336,14 @@ def cmd_tee(a):
 
     def wall_along(sign):
         for k in range(1, 200):
-            r, c, ok = cells(m, np.array([tx + sign * nx * k * m["res"]]), np.array([ty + sign * ny * k * m["res"]]))
+            r, c, ok = cells(m, np.array([px + sign * nx * k * m["res"]]), np.array([py + sign * ny * k * m["res"]]))
             if not ok[0] or m["occ"][r[0], c[0]]:
                 return k * m["res"]
         return 10.0
 
     up, down = wall_along(1), wall_along(-1)
     off = (up - down) / 2
-    cx, cy = tx + nx * off, ty + ny * off
+    cx, cy = px + nx * off, py + ny * off
     if a.arena_centre:
         cx, cy = (float(v) for v in a.arena_centre.split(","))
     half_w = (up + down) / 2
@@ -328,14 +358,15 @@ def cmd_tee(a):
 
     print(f"arena: centre map ({cx:.3f}, {cy:.3f}), x along the walls at {math.degrees(ax):.1f} deg; "
           f"walls at +-{half_w:.2f} m across  -> map_to_arena {m2a[0]:.3f},{m2a[1]:.3f},{m2a[2]:.4f}")
-    print(f"  T       arena ({'%.2f, %.2f, %.0f deg' % in_arena(tx, ty, math.degrees(tth))})")
+    if tee:
+        print(f"  T       arena ({'%.2f, %.2f, %.0f deg' % in_arena(tee[0], tee[1], math.degrees(tee[2]))})")
     for r in ROBOTS:
         p = poses[r]
         print(f"  {r} arena ({'%.2f, %.2f, %.0f deg' % in_arena(p['x'], p['y'], p['yaw'])})")
     if half_w < bound_y:
         print(f"  NOTE: the walls are {half_w:.2f} m from the axis, inside the policy's {bound_y:.2f} m label bound: a robot "
               f"within 1.5 m of a wall sees it as the T. Keep the T and the goal near the axis (|y| small).")
-    overlay(a, m, poses, tee=(tx, ty, tth), boxes=boxes, arena=(cx, cy, ax))
+    overlay(a, m, poses, tee=tee, boxes=boxes, arena=(cx, cy, ax))
 
 
 def cmd_args(a):
@@ -355,33 +386,39 @@ def cmd_seed(a):
 
     poses = current_poses(a)
     n = ros_node("localize_seed")
-    t_sent = time.time()
+    pubs = {r: n.create_publisher(PoseWithCovarianceStamped, f"/{r}/initialpose", 10) for r in ROBOTS}
+    spin_for(n, lambda: all(p.get_subscription_count() > 0 for p in pubs.values()), 10.0)
     for r in ROBOTS:
         p = poses[r]
-        pub = n.create_publisher(PoseWithCovarianceStamped, f"/{r}/initialpose", 10)
-        msg = PoseWithCovarianceStamped()
-        msg.header.frame_id = "map"
-        msg.header.stamp = n.get_clock().now().to_msg()
-        msg.pose.pose.position.x, msg.pose.pose.position.y = p["x"], p["y"]
-        y = math.radians(p["yaw"])
-        msg.pose.pose.orientation.z, msg.pose.pose.orientation.w = math.sin(y / 2), math.cos(y / 2)
-        msg.pose.covariance[0] = msg.pose.covariance[7] = 0.05 ** 2
-        msg.pose.covariance[35] = math.radians(3) ** 2
-        spin_for(n, lambda: pub.get_subscription_count() > 0, 10.0)
-        for _ in range(3):
-            pub.publish(msg)
-            spin_for(n, lambda: False, 0.2)
         print(f"{r}: initialpose ({p['x']:.3f}, {p['y']:.3f}, {p['yaw']:.1f} deg)")
+    # AMCL drops an initial pose until it has the robot's TF (a fresh AMCL gets it once it discovered the
+    # robot): resend to the silent ones until each answers with a pose stamped after the send.
+    t0, left = time.time(), list(ROBOTS)
+    while left and time.time() - t0 < a.seed_timeout:
+        t_sent = time.time()
+        for r in left:
+            p, y = poses[r], math.radians(poses[r]["yaw"])
+            msg = PoseWithCovarianceStamped()
+            msg.header.frame_id = "map"
+            msg.header.stamp = n.get_clock().now().to_msg()
+            msg.pose.pose.position.x, msg.pose.pose.position.y = p["x"], p["y"]
+            msg.pose.pose.orientation.z, msg.pose.pose.orientation.w = math.sin(y / 2), math.cos(y / 2)
+            msg.pose.covariance[0] = msg.pose.covariance[7] = 0.05 ** 2
+            msg.pose.covariance[35] = math.radians(3) ** 2
+            for _ in range(3):
+                pubs[r].publish(msg)
+                spin_for(n, lambda: False, 0.2)
+        spin_for(n, lambda: False, 2.0)
+        am = amcl_poses(2.0)
+        for r in list(left):
+            if r in am and am[r]["age"] <= time.time() - t_sent + 0.5:
+                left.remove(r)
+                print(f"{r}: AMCL answered ({am[r]['x']:.3f}, {am[r]['y']:.3f}, {am[r]['yaw']:.1f} deg) "
+                      f"after {time.time() - t0:.0f} s")
     n.destroy_node()
-    time.sleep(2.5)
-    am = amcl_poses()
-    dead = [r for r in ROBOTS if r not in am or am[r]["age"] > time.time() - t_sent + 0.5]
-    for r in ROBOTS:
-        if r in am:
-            print(f"{r}: AMCL answered ({am[r]['x']:.3f}, {am[r]['y']:.3f}, {am[r]['yaw']:.1f} deg), {am[r]['age']:.1f} s old")
-    if dead:
-        print(f"AMCL NOT ALIVE for {dead}: it stalls when the robot's TF starts after it. Restart it "
-              f"(laptop.bash amcl ...) with the robots' stacks already up, then seed again.")
+    if left:
+        print(f"AMCL NOT ALIVE for {left} after {a.seed_timeout:.0f} s: is the robot's TF on the laptop "
+              f"(robots.bash start ... finished)? Restart it (laptop.bash amcl ...).")
         sys.exit(1)
 
 
@@ -542,9 +579,14 @@ def main():
     ap.add_argument("--w", type=float, default=0.5)
     ap.add_argument("--poses", choices=["state", "amcl"], default="state")
     ap.add_argument("--from", dest="from_", help="seed: poses 'x,y,yaw;x,y,yaw' (map, rad), as for laptop.bash amcl")
-    ap.add_argument("--arena-yaw", type=float, help="override the arena x axis [deg in the map]")
-    ap.add_argument("--arena-centre", help="override the arena centre 'x,y' in the map")
+    ap.add_argument("--arena-yaw", default=os.environ.get("ARENA_YAW"),
+                    help="the arena x axis [deg in the map] (config.bash ARENA_YAW); auto: along the walls")
+    ap.add_argument("--arena-centre", default=os.environ.get("ARENA_CENTRE"),
+                    help="the arena centre 'x,y' in the map (config.bash ARENA_CENTRE); auto: between the walls through the T")
+    ap.add_argument("--seed-timeout", type=float, default=40.0, help="seed: resend until each AMCL answers, at most this long [s]")
     a = ap.parse_args()
+    a.arena_centre = None if a.arena_centre in (None, "", "auto") else a.arena_centre
+    a.arena_yaw = None if a.arena_yaw in (None, "", "auto") else float(a.arena_yaw)
     a.state.mkdir(parents=True, exist_ok=True)
     cmds = ["scan", "match", "tee", "args", "seed", "spin", "check", "verify"]
     a.robots = [w for w in a.words if w in ROBOTS]

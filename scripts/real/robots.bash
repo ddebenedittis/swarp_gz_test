@@ -53,6 +53,8 @@ install_robot() {
       <AllowMulticast>false</AllowMulticast>
     </General>
     <Discovery>
+      <!-- default 30 s: a new laptop process would see this robot only at its next announcement -->
+      <SPDPInterval>1 s</SPDPInterval>
       <ParticipantIndex>auto</ParticipantIndex>
       <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
       <Peers>

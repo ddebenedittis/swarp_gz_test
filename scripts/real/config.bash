@@ -21,7 +21,11 @@ export ROS_DOMAIN_ID=28
 # pusht_lidar_limo_slim240_s2_best.pt with LIDAR_FOV=4.18879.
 CHECKPOINT="${CHECKPOINT:-/opt/swarp/runs/remote-davide-cf/L9c-arena-s0/pusht_lidar_limo_slim240_arena_best.pt}"
 MAPS_DIR="${WS_DIR}/out/real/maps"
-MAP="${MAP:-${MAPS_DIR}/map_corridor2.yaml}"
+MAP="${MAP:-${MAPS_DIR}/map_corridor2_r1.yaml}"
+# The lab arena in MAP's frame (localize.py tee, also without a T); auto: proposed from the walls through the T.
+# map_corridor2: -0.803,-0.219 at 12.284 deg.
+ARENA_CENTRE="${ARENA_CENTRE:-1.934,0.354}"
+ARENA_YAW="${ARENA_YAW:-12.5}"
 STATE_DIR="${WS_DIR}/out/real/state"      # scans, poses, T fit, arena (localize.py)
 RUN_DIR="${RUN_DIR:-${WS_DIR}/out/real/run_$(date +%Y%m%d)}"
 
@@ -31,6 +35,6 @@ IMAGE=swarp_real_humble
 # Episode / manoeuvre limits.
 EPISODE_MAX_V=0.3
 EPISODE_MAX_W=1.0
-ARENA_HALF="${ARENA_HALF:-1.0}"         # robot_bridge arena stop at ARENA_HALF + 0.25; L9c observes it and labels to ARENA_HALF + 0.5
+ARENA_HALF="${ARENA_HALF:-1.25}"         # robot_bridge arena stop at ARENA_HALF + 0.25; L9c observes it and labels to ARENA_HALF + 0.5
 LOC_HALF=1.8            # scan_loc mask (AMCL input): keep it inside the nearest wall
 LIDAR_FOV="${LIDAR_FOV:-3.83972}"  # L9c's trained 220 deg (L8b: 4.18879); the drivers deliver -116..+108 deg

@@ -48,7 +48,8 @@ container)
         --install-base install_humble --packages-ignore limo_gz_description pusht_gz_plugins pusht_gz' 2>&1 | tail -1"
     ;;
 py)
-    docker exec -i -e CHECKPOINT="${CHECKPOINT}" -e ARENA_HALF="${ARENA_HALF}" -e MAP="${MAP}" "${CONTAINER}" bash -c "${SRC}; python3 $*" ;;
+    docker exec -i -e CHECKPOINT="${CHECKPOINT}" -e ARENA_HALF="${ARENA_HALF}" -e MAP="${MAP}" \
+        -e ARENA_CENTRE="${ARENA_CENTRE}" -e ARENA_YAW="${ARENA_YAW}" "${CONTAINER}" bash -c "${SRC}; python3 $*" ;;
 amcl)
     poses=$1; m2a=$2
     docker exec "${CONTAINER}" pkill -INT -f poses.launch.py || true
@@ -99,7 +100,7 @@ bag)
         /robot_1/scan /robot_2/scan /robot_1/pose /robot_2/pose /robot_1/amcl_pose /robot_2/amcl_pose \
         /robot_1/cmd_vel /robot_2/cmd_vel /robot_1/cmd_vel_gated /robot_2/cmd_vel_gated \
         /robot_1/bridge_state /robot_2/bridge_state /robot_1/odom /robot_2/odom /goal /episode /estop > ${LOGS}/bag.log 2>&1"
-    # a new process sees robot_2 (unicast Cyclone) only at its next announcement, up to ~30 s
+    # a new process sees robot_2 (unicast Cyclone) only at its next announcement (SPDPInterval, robots.bash install)
     for k in $(seq 60); do [ "$(cat "${LOGS}/bag.log" 2>/dev/null | grep -c "Subscribed to topic '/robot_2/")" -ge 4 ] && break; sleep 1; done
     echo "bag recording into ${RUN_DIR}/$1, robot_2 topics after ${k} s"
     ;;
