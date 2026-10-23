@@ -21,7 +21,12 @@ world frame unless noted)::
     | cos, sin goal heading (2) | cos, sin own heading (2, only when heading matters)
     | arena half-extents W/2, H/2 (2, only for a checkpoint trained on ``arena_size``)
     | per teammate, ascending index, self skipped: pj - p (2), role sign (1)
-    | F frames, oldest first, each [range / max_range (R) | T-hit mask (R) | robot-hit mask (R)]
+    | F frames, oldest first, each [range / max_range (R) | T-hit mask (R) | robot-hit mask (R)
+      | outside mask (R, only for a checkpoint trained with ``lidar_arena_flag``)]
+
+The outside mask marks the T-labelled rays whose hit, placed from the robot's reported pose,
+lies past the arena on either axis (the arena half-extents with ``arena_size``, else
+``world_size``): a wall or crate just outside the arena still reads as the T, but flagged.
 
 The frame ring shifts by one frame per control step and is zeroed on reset, so the first
 observation of an episode carries the current scan and ``F - 1`` zero frames.
@@ -92,6 +97,8 @@ class ObsConfig:
     # The deployed arena's half-extents (x, y) [m]: observed, and the label bound per axis.
     # Required with ``arena_size``, and within its trained range.
     arena_half: tuple[float, float] | None = None
+    # Each frame adds the outside-the-arena mask (swarp's ``lidar_arena_flag``).
+    lidar_arena_flag: bool = False
 
     def __post_init__(self) -> None:
         if self.obs_level != 1:
@@ -179,8 +186,21 @@ class ObsConfig:
         return 9 + (2 if self.heading_obs else 0) + (2 if self.per_env_arena else 0)
 
     @property
+    def ray_channels(self) -> int:
+        """Values per ray in a lidar frame: range, T mask, robot mask (, outside mask)."""
+        return 4 if self.lidar_arena_flag else 3
+
+    @property
+    def arena_extent(self) -> tuple[float, float]:
+        """The arena's half-extents the outside mask tests against."""
+        if self.per_env_arena:
+            return self.arena_half
+        return (self.world_size, self.world_size)
+
+    @property
     def obs_dim(self) -> int:
-        return self.self_dim + 3 * (self.n_agents - 1) + 3 * self.n_rays * self.frame_stack
+        frames = self.ray_channels * self.n_rays * self.frame_stack
+        return self.self_dim + 3 * (self.n_agents - 1) + frames
 
     def layout(self) -> dict[str, slice]:
         """Name -> slice of the row, as ``PushTLidarScenario.obs_layout()`` at level 1."""
@@ -199,7 +219,7 @@ class ObsConfig:
         k = self.self_dim
         out["teammates"] = slice(k, k + 3 * (self.n_agents - 1))
         k += 3 * (self.n_agents - 1)
-        w = 3 * self.n_rays
+        w = self.ray_channels * self.n_rays
         out["lidar"] = slice(k, k + w * self.frame_stack)
         out["lidar_newest"] = slice(k + w * (self.frame_stack - 1), k + w * self.frame_stack)
         return out
@@ -249,7 +269,7 @@ class ObsBuilder:
         self.cfg = cfg
         self.agent = agent
         self._others = [j for j in range(cfg.n_agents) if j != agent]
-        self._width = 3 * cfg.n_rays
+        self._width = cfg.ray_channels * cfg.n_rays
         self.ring = np.zeros(cfg.frame_stack * self._width, dtype=np.float32)
 
     def reset(self) -> None:
@@ -287,9 +307,14 @@ class ObsBuilder:
             feats.append([pos[j, 0] - p[0], pos[j, 1] - p[1], sgn[j]])
 
         w = self._width
-        frame = np.concatenate(
-            [ranges / cfg.max_range, cls == HIT_MOVABLE, cls == HIT_AGENT]
-        ).astype(np.float32)
+        masks = [cls == HIT_MOVABLE, cls == HIT_AGENT]
+        if cfg.lidar_arena_flag:
+            phi = ray_angles(cfg.n_rays, cfg.lidar_span) + (theta[a] if cfg.body_frame else 0.0)
+            hx = p[0] + ranges * np.cos(phi)
+            hy = p[1] + ranges * np.sin(phi)
+            ex, ey = cfg.arena_extent
+            masks.append((cls == HIT_MOVABLE) & ((np.abs(hx) > ex) | (np.abs(hy) > ey)))
+        frame = np.concatenate([ranges / cfg.max_range, *masks]).astype(np.float32)
         self.ring[:-w] = self.ring[w:]
         self.ring[-w:] = frame
         head = np.concatenate([np.asarray(f, dtype=np.float64) for f in feats])

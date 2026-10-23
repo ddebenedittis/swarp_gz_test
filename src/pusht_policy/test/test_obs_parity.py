@@ -75,6 +75,14 @@ ARENA220 = dict(
     arena_size=(2.0, 2.0, 4.0, 4.0),
 )
 ARENA220_HALF = (1.0, 2.0)
+# L12's outside-the-arena mask (pusht_lidar_limo_slim240_solid_tsize_r5_flag): labels from
+# the reported poses (exact here) and solid perimeter walls at the arena's edge, so walls
+# read as the T inside the label bound and the mask has something to flag.
+ARENA220_FLAG = dict(
+    ARENA220, lidar_label_from_pose=True, lidar_arena_flag=True,
+    scenery_probs=(0.0, 1.0, 0.0, 0.0), scenery_collide=True, wall_missing=0.0,
+    scenery_gap=(0.0, 0.2),
+)
 
 # Observers, a disc fleet and world-axis rays: the role sign, teammate order and the
 # holonomic layout (no heading block).
@@ -137,9 +145,9 @@ def _build(builders, snap, envs) -> np.ndarray:
 @pytest.mark.parametrize(
     "kw",
     [U_H1, LIMO, MIXED, dict(REAL, lidar_fov=4.18879), dict(REAL, lidar_fov=4.18879, lidar_fov_at_mount=True),
-     SPAN240, ARENA220],
+     SPAN240, ARENA220, ARENA220_FLAG],
     ids=["u_h1", "limo", "mixed", "real_fov240", "real_fov240_mount", "span240_open",
-         "arena220"],
+         "arena220", "arena220_flag"],
 )
 def test_obs_matches_swarp(kw, fused):
     torch = pytest.importorskip("torch")
@@ -154,7 +162,7 @@ def test_obs_matches_swarp(kw, fused):
     gen = torch.Generator().manual_seed(1)
     everyone = range(n_envs)
     lid = cfg.layout()["lidar"]
-    seen = {"ring_full": False, "hits": set()}
+    seen = {"ring_full": False, "hits": set(), "outside": False}
 
     def check(obs, envs, tag):
         ref = obs.cpu().numpy()[list(envs)]
@@ -162,6 +170,9 @@ def test_obs_matches_swarp(kw, fused):
         np.testing.assert_allclose(mine, ref, atol=1e-5, rtol=0, err_msg=tag)
         seen["ring_full"] |= bool((ref[..., lid.start : lid.start + 3 * cfg.n_rays] != 0).any())
         seen["hits"] |= set(np.unique(_snapshot(scen, fused)["cls"]).tolist())
+        if cfg.lidar_arena_flag:
+            n, k = cfg.n_rays, cfg.layout()["lidar_newest"].start
+            seen["outside"] |= bool((ref[..., k + 3 * n : k + 4 * n] > 0.5).any())
 
     def act():
         return torch.empty(n_envs, cfg.n_agents, 2).uniform_(-1, 1, generator=gen)
@@ -190,6 +201,7 @@ def test_obs_matches_swarp(kw, fused):
     # The oldest frame was filled (the ring really shifted) and the scans saw something.
     assert seen["ring_full"]
     assert seen["hits"] - {HIT_NONE}, "no ray hit anything: the parity says nothing"
+    assert seen["outside"] or not cfg.lidar_arena_flag, "no hit past the arena was flagged"
 
 
 def test_config_from_checkpoint_meta():
