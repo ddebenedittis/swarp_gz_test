@@ -42,6 +42,8 @@ class VideoRecorder(Node):
         self.title = self.declare_parameter("title", "").value
         self.goal_tol = float(self.declare_parameter("goal_tolerance", 0.15).value)
         self.angle_tol = float(self.declare_parameter("angle_tolerance", 0.25).value)
+        # An episode still on goal at the horizon timed out (a settled hold that never settled).
+        self.horizon = float(self.declare_parameter("horizon", math.inf).value)
         self.font = ImageFont.truetype(FONT, 30)
         self.small = ImageFont.truetype(FONT, 22)
         self.lock = threading.Lock()
@@ -105,7 +107,7 @@ class VideoRecorder(Node):
     def _overlay(self, rgb, t: float, banner: str | None = None, color=(255, 255, 255)) -> np.ndarray:
         img = PILImage.fromarray(rgb)
         d = ImageDraw.Draw(img)
-        text = f"episode {self.episode}   t = {t:5.1f} s"
+        text = f"episode {self.episode}   t = {t:5.1f} s" + ("   ON GOAL" if self._solved() else "")
         d.rectangle((0, 0, img.width, 50), fill=(0, 0, 0))
         d.text((16, 9), text, font=self.font, fill=(255, 255, 255))
         if self.title:
@@ -119,7 +121,7 @@ class VideoRecorder(Node):
 
     def _hold_end(self) -> None:
         t = self.last[0] - self.t0
-        solved = self._solved()
+        solved = self._solved() and t < self.horizon - 0.25
         banner = f"SOLVED in {t:.1f} s" if solved else f"TIMEOUT at {t:.1f} s"
         color = (80, 230, 80) if solved else (255, 90, 70)
         # redraw on the raw frame's pixels under the overlay (the header is redrawn anyway)

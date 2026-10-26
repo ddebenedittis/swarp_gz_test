@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from pusht_policy.obs import DEFAULT_ARENA_HALF, ObsConfig, _parse
+from pusht_policy.obs import DEFAULT_ARENA_HALF, ObsConfig, _parse, pruned_kwargs
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,8 @@ class Task:
     stem_width: float
     goal_tolerance: float
     angle_tolerance: float
+    hold_steps: int = 0  # swarp's settled hold (0: off, the first pass through the goal solves)
+    settle: tuple[float, float, float, float] = (math.inf,) * 4  # T speed, T yaw rate, robot speed, robot yaw rate
 
     @classmethod
     def from_meta(cls, meta: dict[str, Any], arena_half: float | None = None) -> Task:
@@ -50,7 +52,8 @@ class Task:
         from swarp.scenarios.pusht_lidar import PushTLidarScenario
 
         kw = {k: _parse(v) for k, v in dict(meta.get("scen_kwargs", {})).items()}
-        scen = PushTLidarScenario(n_agents=int(meta["n_agents"]), **kw)
+        pruned = pruned_kwargs()
+        scen = PushTLidarScenario(n_agents=int(meta["n_agents"]), **{k: v for k, v in kw.items() if k not in pruned})
         shape = scen.shape
         if kw.get("arena_size") is not None:
             h = DEFAULT_ARENA_HALF if arena_half is None or arena_half <= 0 else float(arena_half)
@@ -75,6 +78,9 @@ class Task:
             bar_len=2 * bar[0], bar_width=2 * bar[1], stem_len=2 * stem[1], stem_width=2 * stem[0],
             goal_tolerance=float(scen.goal_tolerance),
             angle_tolerance=float(scen.angle_tolerance),
+            hold_steps=int(getattr(scen, "hold_steps", 0)),
+            settle=tuple(float(getattr(scen, f"settle_{k}", math.inf))
+                         for k in ("tee_speed", "tee_ang_vel", "robot_speed", "robot_ang_vel")),
         )
 
     @classmethod

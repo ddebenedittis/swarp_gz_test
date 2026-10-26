@@ -13,7 +13,10 @@ Per episode:
 4. publish ``/goal`` and ``/episode`` = id, which starts the policies;
 5. every ``dt`` of sim time, score the T pose from ``/tee/gt_pose``: success when
    ``|p - g| < goal_tolerance`` and ``|wrap(th - g_th)| < angle_tolerance`` (swarp's
-   ``done``), timeout after ``max_steps * dt``;
+   ``done``), timeout after ``max_steps * dt``; with a settled hold (the checkpoint's
+   ``hold_steps``, or the ``hold_steps``/``hold_settle`` parameters) success needs the T on goal
+   for ``hold_steps`` steps in a row with the T and every robot slower than the ``hold_settle``
+   thresholds (``/<body>/gt_vel``), and ``first_on_goal`` keeps the first pass's time;
 6. append one row to ``<out_dir>/<run_name>/episodes.csv``.
 
 Every pose this node reads is ground truth (``/<body>/gt_pose``), whatever the policy sees.
@@ -30,7 +33,7 @@ import time
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TwistStamped
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
@@ -64,6 +67,13 @@ class EpisodeManager(Node):
 
         # The arena of a checkpoint trained on varying ones (its half side [m]; 0: the default).
         self.task = Task.from_checkpoint(ckpt, float(self.declare_parameter("arena_half", 0.0).value))
+        # The settled hold to score with: -1 / "" take the checkpoint's.
+        hold = int(self.declare_parameter("hold_steps", -1).value)
+        settle = str(self.declare_parameter("hold_settle", "").value)
+        self.hold_steps = self.task.hold_steps if hold < 0 else hold
+        self.hold_settle = tuple(map(float, settle.split(","))) if settle else self.task.settle
+        if len(self.hold_settle) != 4:
+            raise ValueError(f"hold_settle takes 4 comma-separated thresholds, got {settle!r}")
         self.robots = [f"robot_{j}" for j in range(1, self.task.n_agents + 1)]
         self.rng = np.random.default_rng(self.seed)
         self.gz = GzWorld(world)
@@ -75,6 +85,10 @@ class EpisodeManager(Node):
         self.scan_t: dict[str, float] = {}
         for body in self.robots + ["tee"]:
             self.create_subscription(PoseStamped, f"/{body}/gt_pose", lambda m, b=body: self._on_pose(b, m), 20)
+        self.vel: dict[str, tuple[float, float]] = {}  # body -> (speed, |yaw rate|), world frame
+        if self.hold_steps > 0:
+            for body in self.robots + ["tee"]:
+                self.create_subscription(TwistStamped, f"/{body}/gt_vel", lambda m, b=body: self._on_vel(b, m), 20)
         self.est: dict[str, tuple[float, float, float, float]] = {}  # the policy's /robot_i/pose
         self.init_pubs = {}
         if self.initialpose:
@@ -103,6 +117,17 @@ class EpisodeManager(Node):
         p = m.pose
         into = self.pose if into is None else into
         into[body] = (stamp_s(m.header.stamp), p.position.x, p.position.y, yaw_of(p.orientation))
+
+    def _on_vel(self, body: str, m: TwistStamped) -> None:
+        v = m.twist
+        self.vel[body] = (math.hypot(v.linear.x, v.linear.y), abs(v.angular.z))
+
+    def settled(self) -> bool:
+        vt, wt, vr, wr = self.hold_settle
+        if not all(b in self.vel for b in self.robots + ["tee"]):
+            return False
+        return (self.vel["tee"][0] < vt and self.vel["tee"][1] < wt
+                and all(self.vel[r][0] < vr and self.vel[r][1] < wr for r in self.robots))
 
     def now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -235,6 +260,7 @@ class EpisodeManager(Node):
 
         # Score at the control rate, like swarp's done after each step.
         k, success, end = 0, False, "timeout"
+        held, first_on_goal = 0, None
         min_pos = math.inf
         pos_err = ang_err = math.nan
         horizon = t.max_steps * t.dt
@@ -244,7 +270,11 @@ class EpisodeManager(Node):
             self.spin_until(lambda: self.pose["tee"][0] >= next_t, self.stall_timeout, "T pose")
             pos_err, ang_err = self.tee_error(goal)
             min_pos = min(min_pos, pos_err)
-            if pos_err < t.goal_tolerance and ang_err < t.angle_tolerance:
+            on_goal = pos_err < t.goal_tolerance and ang_err < t.angle_tolerance
+            if on_goal and first_on_goal is None:
+                first_on_goal = round(k * t.dt, 3)
+            held = held + 1 if on_goal and self.settled() else 0
+            if on_goal and held >= self.hold_steps:
                 success, end = True, "solved"
                 break
             _, tx, ty, _ = self.pose["tee"]
@@ -259,6 +289,7 @@ class EpisodeManager(Node):
             "seed": self.seed, "episode": ep, "success": int(success), "end": end, "time": round(elapsed, 3),
             "steps": k, "final_pos_err": round(pos_err, 4), "final_ang_err": round(ang_err, 4),
             "min_pos_err": round(min_pos, 4), "rejected_draws": rejected,
+            "hold_steps": self.hold_steps, "first_on_goal": "" if first_on_goal is None else first_on_goal,
             "wall_s": round(time.monotonic() - wall0, 2),
         }
         for name, p in [("tee", state["tee"]), ("goal", goal)] + list(zip(self.robots, state["robots"], strict=True)):

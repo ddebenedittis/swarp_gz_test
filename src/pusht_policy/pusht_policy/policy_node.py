@@ -48,10 +48,13 @@ from pusht_policy.obs import (
     ObsBuilder,
     ObsConfig,
     blank_outside_fov,
+    _parse,
     crop_fov_at_mount,
     label_rays,
+    privileged_cols,
     scan_to_rays,
 )
+from pusht_policy.task import Task
 
 #: Latched topics (/goal, /episode): a late subscriber gets the last message.
 LATCHED = QoSProfile(
@@ -132,6 +135,16 @@ class PolicyNode(Node):
         self.agent = self.index - 1
         self.builder = ObsBuilder(self.cfg, self.agent)
         self.roles = roles_for(self.cfg)
+        # A privileged actor (swarp --privileged-actor) also reads the T's pose from /tee/pose
+        # (a mocap rigid body) as swarp's aux targets: ``privileged_cols``.
+        self.priv_dim = int(getattr(self.actor, "priv_dim", 0))
+        if self.priv_dim:
+            task = Task.from_meta(meta, arena_half if arena_half > 0 else None)
+            aux_goal = bool(_parse(dict(meta.get("scen_kwargs", {})).get("aux_goal", "False")))
+            if self.priv_dim != 4 + int(aux_goal):
+                raise ValueError(f"priv_dim {self.priv_dim} is not swarp's aux targets")
+            self.priv = (1.0 / self.cfg.max_range, task.goal_tolerance, task.angle_tolerance,
+                         self.priv_dim == 5)
         self.role_t = torch.as_tensor(self.roles[self.agent : self.agent + 1])
         self.robots = [f"robot_{j}" for j in range(1, n_robots + 1)]
         self.mates = [j for j in range(n_robots) if j != self.agent]
@@ -146,9 +159,9 @@ class PolicyNode(Node):
             self.create_subscription(
                 TwistStamped, f"/{r}/vel", lambda m, j=j: self._on_vel(j, m), 20
             )
-        # Diagnostics only (the policy never reads it): the T pose, recorded next to each step.
+        # The T pose: recorded next to each step, and read by a privileged actor.
         self.tee = History()
-        if self.record_dir:
+        if self.record_dir or self.priv_dim:
             self.create_subscription(PoseStamped, "/tee/pose", self._on_tee, 20)
         self.goal: tuple[float, float, float] | None = None
         self.create_subscription(PoseStamped, "/goal", self._on_goal, LATCHED)
@@ -261,7 +274,8 @@ class PolicyNode(Node):
         it would stretch this step to the next scan and space the stacked frames unevenly."""
         t = stamp_s(scan.header.stamp)
         state = self._state_at(t)
-        if state is None:
+        tee = self.tee.nearest(t) if self.priv_dim else None
+        if state is None or (self.priv_dim and tee is None):
             self.pending = scan
             return
         self.pending = None
@@ -291,6 +305,8 @@ class PolicyNode(Node):
                                             span=cfg.lidar_span)
         gx, gy, gth = self.goal
         obs = self.builder.build(pos, vel, theta, self.roles, np.array([gx, gy]), gth, ranges, cls)
+        if self.priv_dim:
+            obs = np.concatenate([obs, privileged_cols(tee[1], pos[a], self.goal, *self.priv)])
         act = self._act(torch.from_numpy(obs)[None])
         self.held = (float(act[0]), float(act[1]))
         self._publish(*self.held)

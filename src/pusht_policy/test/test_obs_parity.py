@@ -18,6 +18,8 @@ from pusht_policy.obs import (
     ObsConfig,
     blank_outside_fov,
     crop_fov_at_mount,
+    privileged_cols,
+    pruned_kwargs,
     label_rays,
     ray_angles,
     scan_to_rays,
@@ -99,7 +101,8 @@ def _env(kw: dict, fused: bool, n_envs: int):
     torch = pytest.importorskip("torch")
     swarp = pytest.importorskip("swarp")
     del torch
-    scen = swarp.PushTLidarScenario(**kw)
+    pruned = pruned_kwargs()
+    scen = swarp.PushTLidarScenario(**{k: v for k, v in kw.items() if k not in pruned})
     env = swarp.Environment(
         scen, n_envs=n_envs, device="cpu", dt=0.05, substeps=8, seed=0,
         auto_reset=False, fused=fused,
@@ -457,3 +460,31 @@ def test_label_rays_bounds_each_axis():
     r, cls = label_rays(np.array([1.2]), (0.0, 0.0, 0.0), 1.5, (1.0, 2.0),
                         np.zeros((0, 2)), np.zeros(0), LIMO_HALF)
     assert cls.tolist() == [HIT_NONE] and r[0] == 1.5
+
+
+def test_privileged_cols_match_aux_targets():
+    """A privileged actor's extra columns, rebuilt from the T, robot and goal poses, equal
+    swarp's ``aux_targets`` with the on-goal flag, including steps with the T on goal."""
+    torch = pytest.importorskip("torch")
+    n_envs = 4
+    env, scen = _env(dict(LIMO, aux_goal=True), False, n_envs)
+    gen = torch.Generator().manual_seed(3)
+    on = 0
+    with torch.no_grad():
+        env.reset(seed=0)
+        for i in range(12):
+            if i % 3 == 0:  # put env 0's goal on the T, so the flag turns on
+                scen.goal_pos[0] = scen.tee_pos[0]
+                scen.goal_theta[0] = scen.tee_theta[0]
+            env.step(torch.empty(n_envs, 2, 2).uniform_(-0.2, 0.2, generator=gen))
+            ref = scen.aux_targets().cpu().numpy()
+            pos = scen.world.state.pos.cpu().numpy()
+            for e in range(n_envs):
+                tee = (*scen.tee_pos[e].tolist(), float(scen.tee_theta[e]))
+                goal = (*scen.goal_pos[e].tolist(), float(scen.goal_theta[e]))
+                for a in range(2):
+                    mine = privileged_cols(tee, pos[e, a], goal, scen.aux_scale,
+                                           scen.goal_tolerance, scen.angle_tolerance, True)
+                    np.testing.assert_allclose(mine, ref[e, a], atol=1e-5, err_msg=f"step {i} env {e}")
+            on += int(ref[:, 0, 4].sum())
+    assert on > 0

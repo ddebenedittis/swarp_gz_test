@@ -248,6 +248,9 @@ class ObsConfig:
             args["n_pushers"] = int(meta["role_counts"][0])
         if args.get("agent_half_extents") is not None:
             args["agent_half_extents"] = tuple(float(x) for x in args["agent_half_extents"])
+        if "lidar_fov_at_mount" not in kw and "lidar_fov_at_mount" in pruned_kwargs():
+            # Trained on a swarp that always cuts the field of view at the mount.
+            args["lidar_fov_at_mount"] = True
         cfg = cls(n_agents=int(meta["n_agents"]), **args)
         if "obs_dim" in meta and int(meta["obs_dim"]) != cfg.obs_dim:
             raise ValueError(
@@ -539,6 +542,39 @@ def label_rays(
 FOV_EPS = 1e-4
 
 
+def privileged_cols(
+    tee: Sequence[float], own_xy: Sequence[float], goal: Sequence[float], scale: float,
+    goal_tolerance: float, angle_tolerance: float, flag: bool,
+) -> np.ndarray:
+    """swarp's ``aux_targets`` row for one robot, which an actor trained with
+    ``--privileged-actor`` (``priv_dim`` > 0) reads after its observation: the T's position
+    ``tee[:2]`` relative to the robot (world axes) times ``scale`` (``1 / lidar_max_range``),
+    the cos/sin of the T's heading and, with ``flag`` (``aux_goal``), 1 while the T is within
+    both goal tolerances of ``goal`` = ``(x, y, heading)`` and 0 otherwise."""
+    tx, ty, th = tee
+    cols = [(tx - own_xy[0]) * scale, (ty - own_xy[1]) * scale, math.cos(th), math.sin(th)]
+    if flag:
+        err = math.atan2(math.sin(th - goal[2]), math.cos(th - goal[2]))
+        on = math.hypot(tx - goal[0], ty - goal[1]) < goal_tolerance and abs(err) < angle_tolerance
+        cols.append(float(on))
+    return np.asarray(cols, dtype=np.float32)
+
+
+def pruned_kwargs() -> set[str]:
+    """The flags the installed swarp no longer takes, because it implements only their True
+    value (``lidar_fov_at_mount``, ``scenery_collide``); empty without swarp. Checkpoints
+    from before the pruning still store them, and :class:`~pusht_policy.task.Task` drops
+    them before building the scenario."""
+    try:
+        import inspect
+
+        from swarp.scenarios.pusht_lidar import PushTLidarScenario
+    except ImportError:
+        return set()
+    accepted = inspect.signature(PushTLidarScenario.__init__).parameters
+    return {k for k in ("lidar_fov_at_mount", "scenery_collide") if k not in accepted}
+
+
 def crop_fov_at_mount(
     ranges: Sequence[float], angle_min: float, angle_increment: float, fov: float, mount_yaw: float = 0.0
 ) -> np.ndarray:
@@ -588,6 +624,7 @@ __all__ = [
     "label_rays",
     "blank_outside_fov",
     "crop_fov_at_mount",
+    "privileged_cols",
     "ray_angles",
     "scan_points",
     "scan_to_rays",
