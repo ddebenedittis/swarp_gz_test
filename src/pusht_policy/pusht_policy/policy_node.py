@@ -5,7 +5,9 @@ One node per robot (``robot_index`` i, 1-based, drives ``robot_i``), as on the r
 * in: its own ``/robot_i/scan``; every robot's ``/robot_j/pose`` and ``/robot_j/vel``
   (world frame, from Gazebo ground truth or mocap); ``/goal``; ``/episode``
   (``std_msgs/Int32``: the running episode's id, ``-1`` while stopped);
-* out: ``/robot_i/cmd_vel``.
+* out: ``/robot_i/cmd_vel``;
+* with a delayed-comm checkpoint (swarp ``--comm``), out ``/robot_i/msg`` and in every
+  teammate's ``/robot_j/msg`` (``std_msgs/Float32MultiArray``, see :mod:`pusht_policy.comm`).
 
 The control step is triggered by the scan rather than by a free-running timer: a new scan
 whose stamp is at least ``dt`` (the checkpoint's) after the previous step's starts a step,
@@ -16,14 +18,16 @@ would break (a repeated or skipped frame every few steps).
 Each step builds the observation with :mod:`pusht_policy.obs` and publishes
 ``actor.greedy(obs, role)``, or with ``sample`` an action drawn from the policy's
 tanh-Gaussian as in training (``squash(loc + scale * eps)``, ``eps`` from a generator seeded
-with ``sample_seed``). The command is held between steps. A new episode id zeroes the frame
-stack; while stopped the node publishes a zero twist on every scan. Between steps the held
-command is republished on every scan, so the onboard watchdog (limo_bridge's robot_bridge,
-0.3 s) sees a steady 10 Hz stream and stops the robot when the stream ends; a step parked
+with ``sample_seed``). A delayed-comm actor also reads its teammates' messages from the
+previous step of the episode (matched by scan stamp), sends its own after acting, and logs
+how many steps heard a teammate when the episode ends. The command is held between
+steps. A new episode id zeroes the frame stack; while stopped the node publishes a zero
+twist on every scan. Between steps the held command is republished on every scan, so the
+onboard watchdog (limo_bridge's robot_bridge, 0.3 s) sees a steady 10 Hz stream and stops the robot when the stream ends; a step parked
 waiting for a pose republishes nothing, so a dead pose source stops the robot too. SIGINT
 and SIGTERM publish a zero twist before the node exits. With ``record_dir`` set, every episode's per-step
 observations, actions, scans and poses (plus the T pose, for diagnosis only) go to
-``record_dir/ep<id>_robot_<i>.npz``.
+``record_dir/ep<id>_robot_<i>.npz`` (a delayed-comm actor's ``heard`` columns too).
 """
 
 from __future__ import annotations
@@ -39,9 +43,10 @@ from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Int32
+from std_msgs.msg import Float32MultiArray, Int32
 
 from limo_bridge import spin
+from pusht_policy.comm import Messenger
 from pusht_policy.obs import (
     ROLE_OBSERVER,
     ROLE_PUSHER,
@@ -149,6 +154,11 @@ class PolicyNode(Node):
         self.robots = [f"robot_{j}" for j in range(1, n_robots + 1)]
         self.mates = [j for j in range(n_robots) if j != self.agent]
         self.name = self.robots[self.agent]
+        # A delayed-comm actor (swarp --comm): each step it hears the teammates' messages of
+        # the previous step and sends its own.
+        self.comm = (Messenger(self.actor, self.role_t, self.mates, self.dt)
+                     if getattr(self.actor, "delayed", False) else None)
+        self.heard_steps = 0  # steps this episode that heard a teammate
 
         self.poses = [History() for _ in self.robots]
         self.vels = [History() for _ in self.robots]
@@ -168,6 +178,13 @@ class PolicyNode(Node):
         self.create_subscription(Int32, "/episode", self._on_episode, LATCHED)
         self.create_subscription(LaserScan, f"/{self.name}/scan", self._on_scan, qos_profile_sensor_data)
         self.cmd_pub = self.create_publisher(Twist, f"/{self.name}/cmd_vel", 10)
+        if self.comm is not None:
+            self.msg_pub = self.create_publisher(Float32MultiArray, f"/{self.name}/msg", 10)
+            for j in self.mates:
+                self.create_subscription(
+                    Float32MultiArray, f"/{self.robots[j]}/msg",
+                    lambda m, j=j: self.comm.receive(j, m.data), 10,
+                )
 
         self.episode = -1
         self.episode_t0 = math.inf  # scans stamped before the start message are stale
@@ -182,6 +199,7 @@ class PolicyNode(Node):
             f"{self.cfg.max_range} m, frame_stack {self.cfg.frame_stack}, labels to "
             f"{self.cfg.label_bound} m, arena {self.cfg.arena_half or 'fixed'}, "
             f"{'sampled' if self.sample else 'greedy'} actions"
+            + (f", {self.actor.comm} messages of {self.actor.msg_dim}" if self.comm else "")
         )
 
     def _check_sensor(self, meta, allow_fov_below: bool) -> None:
@@ -230,6 +248,11 @@ class PolicyNode(Node):
     def _on_episode(self, m: Int32) -> None:
         if m.data == self.episode:
             return
+        if self.comm and self.episode >= 0 and self.steps > 1:
+            self.get_logger().info(
+                f"episode {self.episode}: heard a teammate on {self.heard_steps} of "
+                f"{self.steps - 1} steps after the first"
+            )
         self._flush()
         self.episode = m.data
         self.pending = None
@@ -237,8 +260,9 @@ class PolicyNode(Node):
             self.builder.reset()
             self.episode_t0 = self.get_clock().now().nanoseconds * 1e-9
             self.last_step_t = -math.inf
-            self.steps = 0
-            self.rec = {k: [] for k in ("t", "obs", "act", "scan", "pose", "vel", "goal", "tee")}
+            self.steps = self.heard_steps = 0
+            self.rec = {k: [] for k in ("t", "obs", "act", "scan", "pose", "vel", "goal", "tee")
+                        + (("heard",) if self.comm else ())}
         else:
             self.episode_t0 = math.inf
             self.held = (0.0, 0.0)
@@ -307,9 +331,14 @@ class PolicyNode(Node):
         obs = self.builder.build(pos, vel, theta, self.roles, np.array([gx, gy]), gth, ranges, cls)
         if self.priv_dim:
             obs = np.concatenate([obs, privileged_cols(tee[1], pos[a], self.goal, *self.priv)])
-        act = self._act(torch.from_numpy(obs)[None])
+        obs_t = torch.from_numpy(obs)[None]
+        heard = self.comm.heard(self.episode, t) if self.comm else None
+        act = self._act(obs_t, heard)
         self.held = (float(act[0]), float(act[1]))
         self._publish(*self.held)
+        if self.comm:
+            self.msg_pub.publish(Float32MultiArray(data=self.comm.payload(self.episode, t, obs_t)))
+            self.heard_steps += int(heard[0, -1] > 0)
         self.last_step_t = t
         self.steps += 1
         if self.record_dir:
@@ -323,13 +352,20 @@ class PolicyNode(Node):
             r["goal"].append(np.array(self.goal, dtype=np.float32))
             tee = self.tee.nearest(t)
             r["tee"].append(np.array(tee[1] if tee else (np.nan,) * 3, dtype=np.float32))
+            if self.comm:
+                r["heard"].append(heard[0].numpy())
 
     @torch.no_grad()
-    def _act(self, obs: torch.Tensor) -> np.ndarray:
-        if not self.sample:
+    def _act(self, obs: torch.Tensor, heard: torch.Tensor | None = None) -> np.ndarray:
+        if self.comm:
+            loc, scale = self.comm.step(obs, heard)
+            if not self.sample:
+                return self.actor.squash(loc)[0].numpy()
+        elif not self.sample:
             return self.actor.greedy(obs, self.role_t)[0].numpy()
+        else:
+            loc, scale = self.actor(obs, self.role_t)
         # The trainer's rollout draw (swarp.rl.ppo): u ~ N(loc, scale), action squash(u).
-        loc, scale = self.actor(obs, self.role_t)
         u = loc + scale * torch.randn(loc.shape, generator=self.gen, dtype=loc.dtype)
         return self.actor.squash(u)[0].numpy()
 
